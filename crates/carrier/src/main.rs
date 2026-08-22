@@ -3,6 +3,8 @@
 //! 从 OpenCarrier fork 而来的个人部署版：单操作者、私有化、aginx 原生。
 //! 定位与总纲见 aginx 生态 docs/AGINX-CARRIER-VISION.md。
 
+mod acp;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -35,11 +37,9 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Start => {
-            anyhow::bail!("start 尚未实现（Phase 5+：kernel 搬运完成后落地）")
+            anyhow::bail!("start 尚未实现（Phase 7 三形态：服务器/桌面形态时落地）");
         }
-        Command::Acp { clone: _ } => {
-            anyhow::bail!("acp 尚未实现（Phase 5：先搬运 kernel/runtime/clone）")
-        }
+        Command::Acp { clone } => acp::run(clone)?,
         Command::Info => {
             let data_dir = dirs::home_dir()
                 .map(|h| h.join(".aginx").join("carrier"))

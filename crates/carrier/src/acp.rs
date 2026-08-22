@@ -1,0 +1,331 @@
+//! stdio ACP 桥 — 把分身暴露到 aginx 网关（agent:// 第一刀）。
+//!
+//! 网关按 `~/.aginx/agents/<clone>/aginx.toml` 拉起本命令，stdin/stdout 走
+//! ndjson JSON-RPC（ACP 标准，协议全文见 aginx 仓 ACP.md）。`initialize` 只
+//! 做握手零开销；`session/new` 才进程内 boot kernel（lazy，boot 失败回
+//! JSON-RPC error 不崩桥）；`session/prompt` 直投 `kernel.send_message`，
+//! 回包走 `agent_message_chunk` + `end_turn`。逐 token 流式与工具事件随
+//! `send_message_streaming` 接入（后续阶段）。
+//!
+//! stdout 只允许 ACP 消息（tracing 全走 stderr）。prompt 处理并发化：
+//! reader 线程喂数，prompt 每个起 tokio task，`session/cancel` 打标志位让
+//! in-flight 轮尽快返回 `cancelled`。
+
+use std::collections::HashMap;
+use std::io::{BufRead as _, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use carrier_kernel::kernel::CarrierKernel;
+use carrier_types::agent::AgentId;
+
+/// One ACP session = one kernel agent + a cancellation flag.
+struct Session {
+    agent_id: AgentId,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct BridgeState {
+    clone: String,
+    /// Lazy kernel boot — `initialize` must stay free.
+    kernel: Mutex<Option<Arc<CarrierKernel>>>,
+    sessions: Mutex<HashMap<String, Arc<Session>>>,
+}
+
+/// Run the bridge until stdin closes. Never returns normally on I/O death —
+/// errors bubble to `main` and kill the process (the gateway respawns on
+/// demand).
+pub fn run(clone: String) -> anyhow::Result<()> {
+    // All logs to stderr — stdout is protocol-only.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let state = Arc::new(BridgeState {
+        clone,
+        kernel: Mutex::new(None),
+        sessions: Mutex::new(HashMap::new()),
+    });
+    // Serialize stdout writes across concurrent prompt handlers.
+    let stdout_lock = Arc::new(Mutex::new(std::io::stdout()));
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        std::thread::spawn(move || {
+            let stdin = std::io::stdin();
+            for line in stdin.lock().lines() {
+                match line {
+                    Ok(l) => {
+                        if tx.send(l).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        while let Some(line) = rx.recv().await {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let msg: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(e) => {
+                    emit(
+                        &stdout_lock,
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": null,
+                            "error": {"code": -32700, "message": format!("Parse error: {e}")},
+                        }),
+                    );
+                    continue;
+                }
+            };
+            let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let id = msg.get("id").cloned();
+            let params = msg.get("params").cloned().unwrap_or(serde_json::json!({}));
+
+            // Notifications (no id) we act on: session/cancel. Others dropped.
+            let Some(id) = id else {
+                if method == "session/cancel" {
+                    let sid = params
+                        .get("sessionId")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    if let Some(sess) = state.sessions.lock().unwrap().get(sid) {
+                        sess.cancelled.store(true, Ordering::Relaxed);
+                    }
+                }
+                continue;
+            };
+
+            match method {
+                "initialize" => respond(
+                    &stdout_lock, &id,
+                    serde_json::json!({
+                        "protocolVersion": 1,
+                        "agentInfo": {
+                            "name": state.clone,
+                            "title": format!("aginx-carrier · {}", state.clone),
+                            "version": env!("CARGO_PKG_VERSION"),
+                        },
+                        "agentCapabilities": {
+                            "loadSession": false,
+                            "promptCapabilities": {
+                                "image": false, "audio": false, "embeddedContext": true,
+                            },
+                        },
+                        "authMethods": [],
+                    }),
+                ),
+                "session/new" => match boot_and_register(&state) {
+                    Ok(session_id) => respond(
+                        &stdout_lock, &id,
+                        serde_json::json!({"sessionId": session_id}),
+                    ),
+                    Err(e) => respond_error(&stdout_lock, &id, -32000, &e),
+                },
+                "session/prompt" => {
+                    let st = Arc::clone(&state);
+                    let out = Arc::clone(&stdout_lock);
+                    tokio::spawn(async move {
+                        handle_prompt(st, out, id, params).await;
+                    });
+                }
+                "session/set_mode" => respond(&stdout_lock, &id, serde_json::Value::Null),
+                _ => respond_error(&stdout_lock, &id, -32601, &format!("Method not found: {method}")),
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Boot the kernel (once) and register a session for the bridge's clone.
+fn boot_and_register(state: &BridgeState) -> Result<String, String> {
+    let mut guard = state.kernel.lock().unwrap();
+    if guard.is_none() {
+        let kernel = CarrierKernel::boot(None).map_err(|e| format!("kernel boot failed: {e}"))?;
+        *guard = Some(Arc::new(kernel));
+    }
+    let kernel = Arc::clone(guard.as_ref().unwrap());
+    drop(guard);
+
+    let entry = kernel
+        .registry
+        .find_by_name(&state.clone)
+        .ok_or_else(|| format!("clone '{}' not installed on this carrier", state.clone))?;
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    state.sessions.lock().unwrap().insert(
+        session_id.clone(),
+        Arc::new(Session {
+            agent_id: entry.id,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }),
+    );
+    Ok(session_id)
+}
+
+/// Flatten ACP prompt content blocks into the text the kernel turn consumes.
+/// We declared image/audio capability false, so anything else is an error.
+fn prompt_text(prompt: &serde_json::Value) -> Result<String, String> {
+    let blocks = prompt
+        .as_array()
+        .ok_or_else(|| "prompt must be a content block array".to_string())?;
+    let mut out = String::new();
+    for b in blocks {
+        match b.get("type").and_then(|t| t.as_str()) {
+            Some("text") => {
+                out.push_str(b.get("text").and_then(|t| t.as_str()).unwrap_or(""));
+                out.push('\n');
+            }
+            Some("resource") => {
+                let res = b.get("resource").cloned().unwrap_or_default();
+                out.push_str(&format!(
+                    "[resource {}]\n{}\n",
+                    res.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
+                    res.get("text").and_then(|t| t.as_str()).unwrap_or(""),
+                ));
+            }
+            Some("resource_link") => {
+                out.push_str(&format!(
+                    "[file {}]\n",
+                    b.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
+                ));
+            }
+            other => return Err(format!("unsupported prompt block type: {other:?}")),
+        }
+    }
+    Ok(out.trim().to_string())
+}
+
+async fn handle_prompt(
+    state: Arc<BridgeState>,
+    out: Arc<Mutex<std::io::Stdout>>,
+    id: serde_json::Value,
+    params: serde_json::Value,
+) {
+    let sid = params
+        .get("sessionId")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let Some(session) = state.sessions.lock().unwrap().get(&sid).cloned() else {
+        respond_error(&out, &id, -32001, "unknown sessionId");
+        return;
+    };
+    session.cancelled.store(false, Ordering::Relaxed);
+    let text = match prompt_text(params.get("prompt").unwrap_or(&serde_json::Value::Null)) {
+        Ok(t) => t,
+        Err(e) => {
+            respond_error(&out, &id, -32602, &e);
+            return;
+        }
+    };
+
+    let kernel = Arc::clone(state.kernel.lock().unwrap().as_ref().unwrap());
+    let cancelled = Arc::clone(&session.cancelled);
+    // Each ACP session runs in its own kernel session (`acp:<id>` label —
+    // session isolation refuses unlabeled turns). channel_type keeps the
+    // channel-side paths happy without claiming a real channel.
+    let turn = kernel.send_message_with_handle(
+        session.agent_id,
+        &text,
+        None,
+        Some(format!("acp:{sid}")),
+        Some("aginx".to_string()),
+        None,
+        Some("acp".to_string()),
+        None,
+        None,
+    );
+    tokio::pin!(turn);
+
+    let result = tokio::select! {
+        r = &mut turn => r,
+        // Poll the cancel flag while the turn runs.
+        _ = wait_cancelled(Arc::clone(&cancelled)) => {
+            Err(carrier_types::error::CarrierError::Internal("cancelled".into()).into())
+        }
+    };
+
+    match result {
+        Ok(r) if !r.response.trim().is_empty() => {
+            update(
+                &out, &sid,
+                serde_json::json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": r.response},
+                }),
+            );
+            respond(&out, &id, serde_json::json!({"stopReason": "end_turn"}));
+        }
+        // Silent turn (agent chose not to reply) — still a clean end_turn.
+        Ok(_) => respond(&out, &id, serde_json::json!({"stopReason": "end_turn"})),
+        Err(e) if e.to_string().contains("cancelled") => {
+            respond(&out, &id, serde_json::json!({"stopReason": "cancelled"}))
+        }
+        Err(e) => respond_error(&out, &id, -32002, &format!("agent turn failed: {e}")),
+    }
+}
+
+/// A tiny future that resolves once the cancel flag is raised (5ms poll —
+/// cancellation is a rare, human-timeout-scale event).
+async fn wait_cancelled(flag: Arc<AtomicBool>) {
+    loop {
+        if flag.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+fn emit(out: &Arc<Mutex<std::io::Stdout>>, value: serde_json::Value) {
+    let mut w = out.lock().unwrap();
+    let _ = writeln!(w, "{value}");
+    let _ = w.flush();
+}
+
+fn respond(out: &Arc<Mutex<std::io::Stdout>>, id: &serde_json::Value, result: serde_json::Value) {
+    emit(
+        out,
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+    );
+}
+
+fn respond_error(
+    out: &Arc<Mutex<std::io::Stdout>>,
+    id: &serde_json::Value,
+    code: i64,
+    message: &str,
+) {
+    emit(
+        out,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": code, "message": message},
+        }),
+    );
+}
+
+fn update(out: &Arc<Mutex<std::io::Stdout>>, session_id: &str, update: serde_json::Value) {
+    emit(
+        out,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {"sessionId": session_id, "update": update},
+        }),
+    );
+}

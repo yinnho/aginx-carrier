@@ -239,6 +239,8 @@ name = "carrier"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "carrier-kernel",
+ "carrier-types",
  "clap",
  "dirs",
  "serde",
@@ -246,6 +248,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
