@@ -7,6 +7,10 @@ repository.workspace = true
 rust-version.workspace = true
 description = "aginx-carrier — 分身 OS：托管数字分身的 Agent 运行时（aginx 网络上的一个网站）"
 
+[lib]
+name = "aginx_carrier"
+path = "src/lib.rs"
+
 [[bin]]
 name = "aginx-carrier"
 path = "src/main.rs"

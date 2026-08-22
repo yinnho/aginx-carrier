@@ -103,6 +103,12 @@ pub fn register_clone_default(
     register_clone(&default_agents_root(), name, display_name, description, version)
 }
 
+/// Whether `~/.aginx/agents/<name>/aginx.toml` already exists. Boot-time
+/// reconciliation skips existing registrations to preserve manual edits.
+pub fn registration_exists_default(name: &str) -> bool {
+    default_agents_root().join(name).join("aginx.toml").is_file()
+}
+
 /// `unregister_clone` against the default `~/.aginx/agents/` root.
 pub fn unregister_clone_default(name: &str) -> std::io::Result<()> {
     unregister_clone(&default_agents_root(), name)
