@@ -278,6 +278,14 @@ async fn handle_prompt(
     // 借用机制：`session/prompt` 带 `sessionTicket` → 无状态借用轮（会话票据进/
     // 出，主人服务器零持久化）。不带 ticket → 维持现有持久 session（向后兼容）。
     if let Some(ticket_val) = params.get("sessionTicket").cloned() {
+        // 3.2 素材：materials[{name, contentBase64}]——仅本轮有效，轮末销毁。
+        let materials = match parse_materials(params.get("materials")) {
+            Ok(m) => m,
+            Err(e) => {
+                respond_error(&out, &id, -32002, &e);
+                return;
+            }
+        };
         handle_borrowed_prompt(
             Arc::clone(&out),
             id,
@@ -286,6 +294,7 @@ async fn handle_prompt(
             session.agent_id,
             text,
             ticket_val,
+            materials,
         )
         .await;
         return;
@@ -336,6 +345,7 @@ async fn handle_prompt(
 }
 
 /// 借用轮处理：会话票据进/出，走 `run_borrowed_turn`（无状态，主人服务器零持久化）。
+#[allow(clippy::too_many_arguments)]
 async fn handle_borrowed_prompt(
     out: Arc<Mutex<std::io::Stdout>>,
     id: serde_json::Value,
@@ -344,6 +354,7 @@ async fn handle_borrowed_prompt(
     agent_id: AgentId,
     text: String,
     ticket_val: serde_json::Value,
+    materials: Vec<carrier_kernel::messaging::BorrowedMaterial>,
 ) {
     let ticket: SessionTicket = match serde_json::from_value(ticket_val) {
         Ok(t) => t,
@@ -354,7 +365,7 @@ async fn handle_borrowed_prompt(
     };
 
     match kernel
-        .run_borrowed_turn(agent_id, ticket, &text, None, None, None)
+        .run_borrowed_turn(agent_id, ticket, &text, None, None, &materials, None)
         .await
     {
         Ok(result) => {
@@ -380,6 +391,35 @@ async fn handle_borrowed_prompt(
         }
         Err(e) => respond_error(&out, &id, -32002, &format!("borrowed turn failed: {e}")),
     }
+}
+
+/// 解析 3.2 素材参数：`materials: [{name, contentBase64}]`。空/缺省 → 空集。
+fn parse_materials(
+    val: Option<&serde_json::Value>,
+) -> Result<Vec<carrier_kernel::messaging::BorrowedMaterial>, String> {
+    use base64::Engine as _;
+
+    let Some(arr) = val else {
+        return Ok(Vec::new());
+    };
+    let arr = arr.as_array().ok_or("materials must be an array")?;
+    let mut out = Vec::with_capacity(arr.len());
+    for m in arr {
+        let name = m
+            .get("name")
+            .and_then(|s| s.as_str())
+            .ok_or("material entry missing name")?
+            .to_string();
+        let b64 = m
+            .get("contentBase64")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| format!("material {name:?} missing contentBase64"))?;
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("material {name:?} base64 decode failed: {e}"))?;
+        out.push(carrier_kernel::messaging::BorrowedMaterial { name, content });
+    }
+    Ok(out)
 }
 
 /// A tiny future that resolves once the cancel flag is raised (5ms poll —

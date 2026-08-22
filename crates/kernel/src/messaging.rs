@@ -103,6 +103,7 @@ struct PreparedContext {
 ///
 /// 主人服务器对借用者无状态：会话的唯一真源是这张票据，由用户侧保管、下一轮
 /// 再提交。`ticket` 已含本轮 user/assistant 消息与最新 turn_summaries。
+#[derive(Debug)]
 pub struct BorrowedTurnOutcome {
     /// 本轮最终文本响应。
     pub response: String,
@@ -115,6 +116,23 @@ pub struct BorrowedTurnOutcome {
     /// agent loop 实际迭代轮数。
     pub iterations: u32,
 }
+
+/// 借用轮素材（3.2）——用户侧随 prompt 提交、仅本轮有效的文件。
+///
+/// 落在 `<workspace>/borrow/<uuid>/materials/<name>`，走 agent 自己的 file
+/// 工具沙箱路径；轮末整目录销毁，开轮先清扫残留（借道轮不跨进程存活）。
+#[derive(Debug, Clone)]
+pub struct BorrowedMaterial {
+    /// workspace 相对路径（拒绝 `..`/绝对路径/反斜杠）。
+    pub name: String,
+    /// 解码后的文件内容。
+    pub content: Vec<u8>,
+}
+
+/// 单个借用素材的大小上限（decode 后）。
+pub const BORROWED_MATERIAL_MAX_FILE: usize = 8 * 1024 * 1024;
+/// 单轮借用素材总量上限（decode 后）。
+pub const BORROWED_MATERIAL_MAX_TOTAL: usize = 32 * 1024 * 1024;
 
 impl CarrierKernel {
     /// Inject flow-declared tools into the turn's tool list.
@@ -1926,6 +1944,7 @@ impl CarrierKernel {
     ///
     /// 与 `execute_llm_agent` 是平行的新路径——生产热路径零改动。不做自动
     /// flow classify；要 flow 就传显式 `active_flow`（确定性按名加载）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_borrowed_turn(
         &self,
         agent_id: AgentId,
@@ -1933,6 +1952,7 @@ impl CarrierKernel {
         message: &str,
         kernel_handle: Option<Arc<dyn KernelHandle>>,
         active_flow: Option<&str>,
+        materials: &[BorrowedMaterial],
         stream_tx: Option<tokio::sync::mpsc::Sender<StreamEvent>>,
     ) -> KernelResult<BorrowedTurnOutcome> {
         let entry = self.registry.get(agent_id).ok_or_else(|| {
@@ -1989,6 +2009,83 @@ impl CarrierKernel {
             None,
         );
 
+        // 3.2 素材内存级生命周期：借用者素材落 <ws>/borrow/<uuid>/materials/，
+        // 仅本轮可读（走 agent 自己的 file 工具沙箱），轮末整目录销毁。
+        // 开轮先清扫残留——借道轮不跨进程存活，borrow/ 下的一切都是死轮遗留。
+        let mut borrow_turn_dir: Option<std::path::PathBuf> = None;
+        if !materials.is_empty() {
+            let ws = manifest.workspace.as_ref().ok_or_else(|| {
+                KernelError::Carrier(CarrierError::InvalidInput(
+                    "borrowed materials require an agent workspace".to_string(),
+                ))
+            })?;
+            let mut total = 0usize;
+            for m in materials {
+                let p = std::path::Path::new(&m.name);
+                if m.name.contains('\\')
+                    || p.is_absolute()
+                    || p.components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return Err(KernelError::Carrier(CarrierError::InvalidInput(format!(
+                        "bad borrowed material name: {:?}",
+                        m.name
+                    ))));
+                }
+                if m.content.len() > BORROWED_MATERIAL_MAX_FILE {
+                    return Err(KernelError::Carrier(CarrierError::InvalidInput(format!(
+                        "borrowed material {:?} exceeds {}B limit",
+                        m.name, BORROWED_MATERIAL_MAX_FILE
+                    ))));
+                }
+                total += m.content.len();
+            }
+            if total > BORROWED_MATERIAL_MAX_TOTAL {
+                return Err(KernelError::Carrier(CarrierError::InvalidInput(format!(
+                    "borrowed materials total {total}B exceeds {BORROWED_MATERIAL_MAX_TOTAL}B limit"
+                ))));
+            }
+
+            let borrow_root = ws.join("borrow");
+            if let Err(e) = std::fs::remove_dir_all(&borrow_root) {
+                // NotFound 是正常首态；其他错误不阻断（best-effort 清扫）。
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(dir = %borrow_root.display(), error = %e, "borrow sweep failed");
+                }
+            }
+            let turn_root = borrow_root.join(uuid::Uuid::new_v4().simple().to_string());
+            let mats_dir = turn_root.join("materials");
+            std::fs::create_dir_all(&mats_dir).map_err(|e| {
+                KernelError::Carrier(CarrierError::Internal(format!(
+                    "borrowed materials staging failed: {e}"
+                )))
+            })?;
+            for m in materials {
+                let dest = mats_dir.join(&m.name);
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        KernelError::Carrier(CarrierError::Internal(format!(
+                            "borrowed material dir failed: {e}"
+                        )))
+                    })?;
+                }
+                std::fs::write(&dest, &m.content).map_err(|e| {
+                    KernelError::Carrier(CarrierError::Internal(format!(
+                        "borrowed material write failed: {e}"
+                    )))
+                })?;
+            }
+            // Prompt 提示：素材相对路径（相对 agent workspace）。
+            let mats_rel = format!(
+                "borrow/{}/materials",
+                turn_root.file_name().unwrap().to_string_lossy()
+            );
+            manifest.model.system_prompt.push_str(&format!(
+                "\n\n【借用轮素材】用户本轮提交的素材在 `{mats_rel}/` 下（相对 workspace，仅本轮有效，轮末销毁）。请用 file_read/file_list 等工具按需读取。"
+            ));
+            borrow_turn_dir = Some(turn_root);
+        }
+
         let driver = self.resolve_driver(&manifest)?;
 
         let brain_ref: Option<Arc<dyn carrier_runtime::llm_driver::Brain>> =
@@ -2003,7 +2100,7 @@ impl CarrierKernel {
         let memory_handle: Arc<dyn carrier_runtime::memory_handle::MemoryHandle> =
             Arc::new(crate::handle::MemorySubstrateHandle::new(Arc::clone(&ephemeral)));
 
-        let result = run_agent_loop(
+        let loop_result = run_agent_loop(
             &manifest,
             message,
             &mut session,
@@ -2027,8 +2124,21 @@ impl CarrierKernel {
             Some("borrow"),
             Some(self.runtime.llm_concurrency_limit.clone()),
         )
-        .await
-        .map_err(KernelError::Carrier)?;
+        .await;
+
+        // 轮末销毁——无论成败：事件目录 + 借道素材目录，主人服务器零持久化。
+        if let Err(e) = std::fs::remove_dir_all(&events_dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!(dir = %events_dir.display(), error = %e, "borrowed-turn events dir cleanup failed");
+            }
+        }
+        if let Some(dir) = &borrow_turn_dir {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                warn!(dir = %dir.display(), error = %e, "borrowed-turn materials dir cleanup failed");
+            }
+        }
+
+        let result = loop_result.map_err(KernelError::Carrier)?;
 
         let outcome = BorrowedTurnOutcome {
             response: result.response,
@@ -2037,11 +2147,6 @@ impl CarrierKernel {
             total_usage: result.total_usage,
             iterations: result.iterations,
         };
-
-        // 轮末销毁每轮事件目录——借用轮在主机上零持久化。
-        if let Err(e) = std::fs::remove_dir_all(&events_dir) {
-            warn!(dir = %events_dir.display(), error = %e, "borrowed-turn events dir cleanup failed");
-        }
 
         Ok(outcome)
     }
@@ -3368,6 +3473,30 @@ mod tests {
         );
     }
 
+    /// 把 kernel 的 brain 换成注入 driver（boot_test_kernel 的 brain 指向
+    /// 不可达 URL）。
+    fn install_test_driver<D>(kernel: &CarrierKernel, driver: D)
+    where
+        D: carrier_runtime::llm_driver::LlmDriver + 'static,
+    {
+        use carrier_types::brain::{BrainConfig, ModalityEntry};
+
+        let brain_config = BrainConfig {
+            base_url: "http://127.0.0.1:1/v1/chat/completions".to_string(),
+            api_key_env: String::new(),
+            default_modality: "chat".to_string(),
+            modalities: HashMap::from([(
+                "chat".to_string(),
+                ModalityEntry {
+                    description: "test".to_string(),
+                },
+            )]),
+        };
+        *kernel.brain.brain.write().unwrap() = Arc::new(
+            crate::brain::Brain::with_test_driver(brain_config, Arc::new(driver)),
+        );
+    }
+
     /// 借用轮（第三刀 3.1）：票据进/出 + 上下文连续性 + 无状态断言。
     ///
     /// EchoDriver 回显它看到的全部 user 消息——第二轮能看见第一轮的内容
@@ -3379,7 +3508,6 @@ mod tests {
         use carrier_runtime::llm_driver::{
             CompletionRequest, CompletionResponse, LlmDriver, LlmError,
         };
-        use carrier_types::brain::{BrainConfig, ModalityEntry};
         use carrier_types::message::{ContentBlock, Role, StopReason, TokenUsage};
 
         struct EchoDriver;
@@ -3413,21 +3541,7 @@ mod tests {
 
         let (_tmp, kernel) = boot_test_kernel();
         // boot_test_kernel 的 brain 指向不可达 URL——换成 EchoDriver。
-        let brain_config = BrainConfig {
-            base_url: "http://127.0.0.1:1/v1/chat/completions".to_string(),
-            api_key_env: String::new(),
-            default_modality: "chat".to_string(),
-            modalities: HashMap::from([(
-                "chat".to_string(),
-                ModalityEntry {
-                    description: "test".to_string(),
-                },
-            )]),
-        };
-        *kernel.brain.brain.write().unwrap() = Arc::new(crate::brain::Brain::with_test_driver(
-            brain_config,
-            Arc::new(EchoDriver),
-        ));
+        install_test_driver(&kernel, EchoDriver);
 
         // run_borrowed_turn 经 registry 解析 agent——直接注册测试 entry。
         let entry = entry_with_workspace(std::path::Path::new("/tmp/nonexistent-ws"));
@@ -3436,7 +3550,7 @@ mod tests {
 
         // 第一轮：空票据进。
         let out1 = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "ALPHA-MARKER", None, None, None)
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "ALPHA-MARKER", None, None, &[], None)
             .await
             .expect("first borrowed turn should succeed");
         assert!(!out1.response.is_empty());
@@ -3451,7 +3565,7 @@ mod tests {
 
         // 第二轮：回喂第一轮票据——echo 必须同时看见 ALPHA 与 BETA。
         let out2 = kernel
-            .run_borrowed_turn(agent_id, out1.ticket, "BETA-MARKER", None, None, None)
+            .run_borrowed_turn(agent_id, out1.ticket, "BETA-MARKER", None, None, &[], None)
             .await
             .expect("second borrowed turn should succeed");
         assert!(
@@ -3475,5 +3589,138 @@ mod tests {
             borrow_rows, 0,
             "borrowed turns must not persist sessions on the host"
         );
+    }
+
+    /// 借用轮素材（第三刀 3.2）：轮中可读（driver 轮内实读素材文件）、prompt
+    /// 注入素材路径提示、轮末销毁、开轮清扫残留、恶意名/超限/无 workspace 拒绝。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn borrowed_turn_materials_lifecycle() {
+        use carrier_memory::session::SessionTicket;
+        use carrier_runtime::llm_driver::{
+            CompletionRequest, CompletionResponse, LlmDriver, LlmError,
+        };
+        use carrier_types::message::{ContentBlock, StopReason, TokenUsage};
+
+        /// 轮中探针：complete() 被调时素材必须已落盘——实读 borrow/*/materials/
+        /// secret.txt 回显内容，并回显 system prompt 是否含素材提示段。
+        struct MaterialsProbeDriver {
+            ws: std::path::PathBuf,
+        }
+        #[async_trait::async_trait]
+        impl LlmDriver for MaterialsProbeDriver {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                let mut material = "<missing>".to_string();
+                if let Ok(rd) = std::fs::read_dir(self.ws.join("borrow")) {
+                    for e in rd.flatten() {
+                        if let Ok(c) =
+                            std::fs::read_to_string(e.path().join("materials/secret.txt"))
+                        {
+                            material = c;
+                            break;
+                        }
+                    }
+                }
+                let sys = request.system.unwrap_or_default();
+                let hint = sys.contains("【借用轮素材】") && sys.contains("/materials/");
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: format!("MATERIAL={material} HINT={hint}"),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                    media: None,
+                })
+            }
+        }
+
+        let (_tmp, kernel) = boot_test_kernel();
+        let ws = tempfile::tempdir().unwrap();
+        install_test_driver(&kernel, MaterialsProbeDriver { ws: ws.path().to_path_buf() });
+
+        // 植入上一个"死轮"残留——开轮清扫必须吃掉它。
+        std::fs::create_dir_all(ws.path().join("borrow/stale-turn/materials")).unwrap();
+        std::fs::write(ws.path().join("borrow/stale-turn/materials/junk"), b"junk").unwrap();
+
+        let mut entry = entry_with_workspace(ws.path());
+        entry.name = "materials-test-agent".to_string();
+        entry.manifest.name = entry.name.clone();
+        let agent_id = entry.id;
+        kernel.registry.register(entry).expect("agent should register");
+
+        // 正常轮：素材轮中可读 + prompt 提示注入 + 轮末销毁 + 残留清扫。
+        let materials = vec![super::BorrowedMaterial {
+            name: "secret.txt".to_string(),
+            content: b"secret 42".to_vec(),
+        }];
+        let out = kernel
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "读素材",
+                None,
+                None,
+                &materials,
+                None,
+            )
+            .await
+            .expect("materials turn should succeed");
+        assert!(
+            out.response.contains("MATERIAL=secret 42"),
+            "material must be readable mid-turn: {}",
+            out.response
+        );
+        assert!(
+            out.response.contains("HINT=true"),
+            "system prompt must carry the materials hint: {}",
+            out.response
+        );
+        let leftover: Vec<_> = std::fs::read_dir(ws.path().join("borrow"))
+            .map(|rd| rd.flatten().collect())
+            .unwrap_or_default();
+        assert!(leftover.is_empty(), "borrow/ must be empty after the turn");
+
+        // 恶意名拒绝：`..` 逃逸。
+        let evil = vec![super::BorrowedMaterial {
+            name: "../escape.txt".to_string(),
+            content: b"x".to_vec(),
+        }];
+        let err = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &evil, None)
+            .await
+            .expect_err("traversal name must be rejected");
+        assert!(err.to_string().contains("bad borrowed material name"));
+
+        // 超限拒绝：单文件 > 8MiB。
+        let big = vec![super::BorrowedMaterial {
+            name: "big.bin".to_string(),
+            content: vec![0u8; super::BORROWED_MATERIAL_MAX_FILE + 1],
+        }];
+        let err = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &big, None)
+            .await
+            .expect_err("oversize material must be rejected");
+        assert!(err.to_string().contains("exceeds"));
+
+        // 无 workspace 的 agent 带素材 → 拒绝。
+        let mut bare = entry_with_workspace(ws.path());
+        bare.id = carrier_types::agent::AgentId::new();
+        bare.name = "bare-test-agent".to_string();
+        bare.manifest.name = bare.name.clone();
+        bare.manifest.workspace = None;
+        let bare_id = bare.id;
+        kernel.registry.register(bare).expect("bare agent register");
+        let err = kernel
+            .run_borrowed_turn(bare_id, SessionTicket::empty(None), "m", None, None, &materials, None)
+            .await
+            .expect_err("materials without workspace must be rejected");
+        assert!(err.to_string().contains("require an agent workspace"));
     }
 }
