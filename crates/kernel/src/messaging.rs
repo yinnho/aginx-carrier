@@ -115,6 +115,18 @@ pub struct BorrowedTurnOutcome {
     pub total_usage: carrier_types::message::TokenUsage,
     /// agent loop 实际迭代轮数。
     pub iterations: u32,
+    /// 本轮产物文件（3.3 回传）：agent 写进 borrow/<uuid>/output/ 的内容，
+    /// 轮末随响应回流用户侧后，主机上即销毁。
+    pub files: Vec<BorrowedOutputFile>,
+}
+
+/// 单个回传产物文件。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BorrowedOutputFile {
+    /// workspace 相对路径（borrow/<uuid>/output/ 之后的部分）。
+    pub name: String,
+    #[serde(rename = "contentBase64")]
+    pub content_base64: String,
 }
 
 /// 借用轮素材（3.2）——用户侧随 prompt 提交、仅本轮有效的文件。
@@ -133,6 +145,10 @@ pub struct BorrowedMaterial {
 pub const BORROWED_MATERIAL_MAX_FILE: usize = 8 * 1024 * 1024;
 /// 单轮借用素材总量上限（decode 后）。
 pub const BORROWED_MATERIAL_MAX_TOTAL: usize = 32 * 1024 * 1024;
+/// 单个回传产物上限（3.3）。
+pub const BORROWED_OUTPUT_MAX_FILE: usize = 16 * 1024 * 1024;
+/// 单轮回传产物总量预算——超预算的文件跳过并计数。
+pub const BORROWED_OUTPUT_MAX_TOTAL: usize = 64 * 1024 * 1024;
 
 impl CarrierKernel {
     /// Inject flow-declared tools into the turn's tool list.
@@ -1978,6 +1994,19 @@ impl CarrierKernel {
 
         let mut tools = self.resolve_tools(&entry);
 
+        // 借用轮产物通道依赖 file_write，但 CORE_TOOL_NAMES 不含它（生产路径
+        // 靠 tool_search 发现）——借用轮没有持久会话可等发现，直接补挂。
+        if !tools.iter().any(|t| t.name == "file_write") {
+            if let Some(fw) = carrier_runtime::tool_runner::builtin_tool_definitions(
+                self.config.cli_exec.clone(),
+            )
+            .into_iter()
+            .find(|t| t.name == "file_write")
+            {
+                tools.push(fw);
+            }
+        }
+
         // 显式 flow（确定性按名加载，不接 send-time classifier）。
         let mut auto_matched_flow: Option<String> = None;
         if let Some(flow_name) = active_flow {
@@ -2012,8 +2041,11 @@ impl CarrierKernel {
         // 3.2 素材内存级生命周期：借用者素材落 <ws>/borrow/<uuid>/materials/，
         // 仅本轮可读（走 agent 自己的 file 工具沙箱），轮末整目录销毁。
         // 开轮先清扫残留——借道轮不跨进程存活，borrow/ 下的一切都是死轮遗留。
+        // 3.3：同目录 output/ 是产物区，agent 写这里的文件轮末随响应回流。
+        // 无素材轮也建目录（output/ 提示段始终注入，产物区恒可用）。
+        #[allow(unused_assignments)]
         let mut borrow_turn_dir: Option<std::path::PathBuf> = None;
-        if !materials.is_empty() {
+        {
             let ws = manifest.workspace.as_ref().ok_or_else(|| {
                 KernelError::Carrier(CarrierError::InvalidInput(
                     "borrowed materials require an agent workspace".to_string(),
@@ -2054,14 +2086,13 @@ impl CarrierKernel {
                 }
             }
             let turn_root = borrow_root.join(uuid::Uuid::new_v4().simple().to_string());
-            let mats_dir = turn_root.join("materials");
-            std::fs::create_dir_all(&mats_dir).map_err(|e| {
+            std::fs::create_dir_all(turn_root.join("materials")).map_err(|e| {
                 KernelError::Carrier(CarrierError::Internal(format!(
                     "borrowed materials staging failed: {e}"
                 )))
             })?;
             for m in materials {
-                let dest = mats_dir.join(&m.name);
+                let dest = turn_root.join("materials").join(&m.name);
                 if let Some(parent) = dest.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| {
                         KernelError::Carrier(CarrierError::Internal(format!(
@@ -2080,8 +2111,12 @@ impl CarrierKernel {
                 "borrow/{}/materials",
                 turn_root.file_name().unwrap().to_string_lossy()
             );
+            let out_rel = format!(
+                "borrow/{}/output",
+                turn_root.file_name().unwrap().to_string_lossy()
+            );
             manifest.model.system_prompt.push_str(&format!(
-                "\n\n【借用轮素材】用户本轮提交的素材在 `{mats_rel}/` 下（相对 workspace，仅本轮有效，轮末销毁）。请用 file_read/file_list 等工具按需读取。"
+                "\n\n【借用轮素材】用户本轮提交的素材在 `{mats_rel}/` 下（相对 workspace，仅本轮有效，轮末销毁）。请用 file_read/file_list 等工具按需读取。\n【借用轮产物】需要交付给用户的文件请写到 `{out_rel}/` 下（相对 workspace，轮末自动回传给用户并销毁，主机不留存）。"
             ));
             borrow_turn_dir = Some(turn_root);
         }
@@ -2132,13 +2167,67 @@ impl CarrierKernel {
                 warn!(dir = %events_dir.display(), error = %e, "borrowed-turn events dir cleanup failed");
             }
         }
-        if let Some(dir) = &borrow_turn_dir {
-            if let Err(e) = std::fs::remove_dir_all(dir) {
-                warn!(dir = %dir.display(), error = %e, "borrowed-turn materials dir cleanup failed");
-            }
-        }
 
         let result = loop_result.map_err(KernelError::Carrier)?;
+
+        // 3.3 产物回传：销毁前收集 output/ 下的文件（预算内），随响应回流用户侧。
+        let mut files: Vec<BorrowedOutputFile> = Vec::new();
+        let mut skipped_oversize = 0u32;
+        if let Some(dir) = &borrow_turn_dir {
+            use base64::Engine as _;
+            let out_dir = dir.join("output");
+            let mut budget_left = BORROWED_OUTPUT_MAX_TOTAL;
+            let mut stack = vec![out_dir.clone()];
+            while let Some(d) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else {
+                    continue;
+                };
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                        continue;
+                    }
+                    let Ok(meta) = e.metadata() else { continue };
+                    if !meta.is_file() || meta.len() == 0 {
+                        continue;
+                    }
+                    if meta.len() as usize > BORROWED_OUTPUT_MAX_FILE
+                        || meta.len() as usize > budget_left
+                    {
+                        skipped_oversize += 1;
+                        continue;
+                    }
+                    match (|| -> Result<(String, Vec<u8>), Box<dyn std::error::Error>> {
+                        let name = p.strip_prefix(&out_dir)?.to_string_lossy().into_owned();
+                        Ok((name, std::fs::read(&p)?))
+                    })() {
+                        Ok((name, content)) => {
+                            budget_left -= content.len();
+                            files.push(BorrowedOutputFile {
+                                name,
+                                content_base64: base64::engine::general_purpose::STANDARD
+                                    .encode(content),
+                            });
+                        }
+                        Err(e) => warn!(path = %p.display(), error = %e, "borrowed output collect failed"),
+                    }
+                }
+            }
+            files.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+
+        // 销毁借道素材/产物目录（回传已在手）。
+        if let Some(dir) = borrow_turn_dir {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(dir = %dir.display(), error = %e, "borrowed-turn materials dir cleanup failed");
+                }
+            }
+        }
+        if skipped_oversize > 0 {
+            warn!(skipped = skipped_oversize, "borrowed outputs over budget not returned");
+        }
 
         let outcome = BorrowedTurnOutcome {
             response: result.response,
@@ -2146,6 +2235,7 @@ impl CarrierKernel {
             ticket: session.to_ticket(),
             total_usage: result.total_usage,
             iterations: result.iterations,
+            files,
         };
 
         Ok(outcome)
@@ -3718,9 +3808,129 @@ mod tests {
         let bare_id = bare.id;
         kernel.registry.register(bare).expect("bare agent register");
         let err = kernel
-            .run_borrowed_turn(bare_id, SessionTicket::empty(None), "m", None, None, &materials, None)
+            .run_borrowed_turn(
+                bare_id,
+                SessionTicket::empty(None),
+                "m",
+                None,
+                None,
+                &materials,
+                None,
+            )
             .await
             .expect_err("materials without workspace must be rejected");
         assert!(err.to_string().contains("require an agent workspace"));
+    }
+
+    /// 借用轮产物回传（第三刀 3.3）：driver 轮中往 borrow/<uuid>/output/ 写
+    /// 文件（等价 agent 的 file_write），轮末文件随 outcome.files 回流、主机
+    /// 目录销毁；超预算大文件跳过不阻断。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn borrowed_turn_output_files_returned_and_host_cleaned() {
+        use carrier_memory::session::SessionTicket;
+        use carrier_runtime::llm_driver::{
+            CompletionRequest, CompletionResponse, LlmDriver, LlmError,
+        };
+        use carrier_types::message::{ContentBlock, StopReason, TokenUsage};
+
+        /// 轮中写产物：一个正常文件 + 一个超过单文件上限的文件。
+        /// `writes: Arc<AtomicU32>`——只在第一次 complete 写（第二轮断言空产物）。
+        struct OutputWriterDriver {
+            ws: std::path::PathBuf,
+            writes: Arc<std::sync::atomic::AtomicU32>,
+        }
+        #[async_trait::async_trait]
+        impl LlmDriver for OutputWriterDriver {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                use std::sync::atomic::Ordering;
+                if self.writes.fetch_add(1, Ordering::SeqCst) > 0 {
+                    return Ok(CompletionResponse {
+                        content: vec![ContentBlock::Text {
+                            text: "done-again".to_string(),
+                            provider_metadata: None,
+                        }],
+                        stop_reason: StopReason::EndTurn,
+                        tool_calls: vec![],
+                        usage: TokenUsage { input_tokens: 1, output_tokens: 1 },
+                        media: None,
+                    });
+                }
+                let mut out_dir = None;
+                if let Ok(rd) = std::fs::read_dir(self.ws.join("borrow")) {
+                    if let Some(e) = rd.flatten().next() {
+                        let d = e.path().join("output");
+                        std::fs::create_dir_all(&d).unwrap();
+                        out_dir = Some(d);
+                    }
+                }
+                let d = out_dir.expect("turn dir must exist mid-turn");
+                std::fs::write(d.join("report.md"), "# 报告\n正文").unwrap();
+                std::fs::create_dir_all(d.join("sub")).unwrap();
+                std::fs::write(d.join("sub/nested.txt"), "nested").unwrap();
+                std::fs::write(d.join("huge.bin"), vec![0u8; super::BORROWED_OUTPUT_MAX_FILE + 1])
+                    .unwrap();
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "done".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage { input_tokens: 1, output_tokens: 1 },
+                    media: None,
+                })
+            }
+        }
+
+        let (_tmp, kernel) = boot_test_kernel();
+        let ws = tempfile::tempdir().unwrap();
+        install_test_driver(
+            &kernel,
+            OutputWriterDriver {
+                ws: ws.path().to_path_buf(),
+                writes: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            },
+        );
+
+        let mut entry = entry_with_workspace(ws.path());
+        entry.name = "output-test-agent".to_string();
+        entry.manifest.name = entry.name.clone();
+        let agent_id = entry.id;
+        kernel.registry.register(entry).expect("register");
+
+        let out = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "生成报告", None, None, &[], None)
+            .await
+            .expect("output turn should succeed");
+
+        // 回流：两个预算内文件（含子目录相对路径），超大文件跳过。
+        let names: Vec<&str> = out.files.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"report.md"), "files: {names:?}");
+        assert!(names.contains(&"sub/nested.txt"), "files: {names:?}");
+        assert_eq!(out.files.len(), 2);
+        let report = out.files.iter().find(|f| f.name == "report.md").unwrap();
+        use base64::Engine as _;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(&report.content_base64)
+                .unwrap(),
+            "# \u{62a5}\u{544a}\n\u{6b63}\u{6587}".as_bytes()
+        );
+
+        // 主机销毁：borrow/ 清空。
+        let leftover: Vec<_> = std::fs::read_dir(ws.path().join("borrow"))
+            .map(|rd| rd.flatten().collect())
+            .unwrap_or_default();
+        assert!(leftover.is_empty(), "borrow/ must be empty after turn");
+
+        // 无素材轮也建 output/（提示段始终注入）——空产物时 files 为空即可。
+        let out2 = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "再来一轮", None, None, &[], None)
+            .await
+            .expect("second output turn should succeed");
+        assert!(out2.files.is_empty());
     }
 }

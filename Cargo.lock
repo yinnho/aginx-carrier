@@ -350,6 +350,7 @@ name = "carrier"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "carrier-ilink",
  "carrier-kernel",
  "carrier-memory",

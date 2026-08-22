@@ -379,13 +379,14 @@ async fn handle_borrowed_prompt(
                     }),
                 );
             }
-            // 返回更新后的票据——会话真源在用户侧，服务器无状态。
+            // 返回更新后的票据 + 回传产物——会话与产物的真源都在用户侧，服务器无状态。
             respond(
                 &out,
                 &id,
                 serde_json::json!({
                     "stopReason": "end_turn",
                     "sessionTicket": result.ticket,
+                    "files": result.files,
                 }),
             );
         }
