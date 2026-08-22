@@ -1,0 +1,105 @@
+//! Tool search meta-tool — searches the tool catalog and returns matching tools.
+
+use crate::tool_context::ToolContext;
+use crate::tools::ToolModule;
+use async_trait::async_trait;
+use serde_json::Value;
+use carrier_types::error::CarrierResult;
+use carrier_types::tool::ToolDefinition;
+
+pub struct ToolSearchTools;
+
+#[async_trait]
+impl ToolModule for ToolSearchTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "tool_search".to_string(),
+            description: "Search the tool catalog for tools matching a natural language query. Only call this when you need a capability you do NOT currently have. Check your current tool list first — if a tool is already there, use it directly. Returns matching tool names and descriptions.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What you want to do (e.g. 'send message', 'browse web', 'read file')"
+                    }
+                },
+                "required": ["query"]
+            }),
+        }]
+    }
+
+    async fn execute(
+        &self,
+        name: &str,
+        input: &Value,
+        ctx: &ToolContext<'_>,
+    ) -> Option<CarrierResult<String>> {
+        if name != "tool_search" {
+            return None;
+        }
+        let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+
+        let mut results = if let Some(kernel) = ctx.kernel {
+            kernel.search_tools(query, 10, ctx.max_tool_level)
+        } else {
+            Vec::new()
+        };
+
+        // Flow `tools:` hard sandbox: only surface tools within the flow's frozen
+        // allow-list, so the agent can't widen its toolset beyond what the flow
+        // declares (e.g. clone-creator discovering train_write instead of using
+        // the flow's declared clone_install). Mirrors the tool_runner check.
+        // MCP tools (mcp_*) are exempt — flows call them without declaring each.
+        if let Some(allowed) = ctx.flow_allowed_tools {
+            results.retain(|(_, def)| {
+                def.name.starts_with("mcp_")
+                    || allowed.iter().any(|a| {
+                        crate::tool_runner::base_tool_name(a)
+                            == crate::tool_runner::base_tool_name(&def.name)
+                    })
+            });
+        }
+
+        if results.is_empty() {
+            return Some(Ok("No additional tools found matching your query — all available tools are already loaded. Do NOT call tool_search again. Use the tools you already have to accomplish the task.".to_string()));
+        }
+
+        let mut out = format!(
+            "Found {} tool(s) matching \"{}\":\n\n",
+            results.len(),
+            query
+        );
+        for (_ts_name, def) in &results {
+            // Char-boundary-safe truncation: a raw `&def.description[..197]`
+            // panics when the byte cut lands inside a multi-byte UTF-8 char —
+            // Chinese tool descriptions (api_tools) hit it routinely.
+            let desc_preview = super::memory::truncate_content(&def.description, 200);
+            out.push_str(&format!("## {}\n{}\n\n", def.name, desc_preview));
+            // Include input_schema so LLM knows how to call the tool
+            if !def.input_schema.is_null() {
+                out.push_str(&format!(
+                    "Parameters: {}\n\n",
+                    serde_json::to_string(&def.input_schema).unwrap_or_default()
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "\n✅ 以上 {} 个工具已加入你的工具列表，你现在可以直接调用它们（无需再 tool_search）。\n\
+             下一步：直接调用最匹配的 `{}` 来执行任务（必需参数见上方它的 Parameters）。\n\
+             不要再用 tool_search 搜同样的需求——它只会返回这个相同的列表，不执行任何操作。\n\
+             如果这些工具都不合适，换一个不同的 query 关键词再搜。",
+            results.len(),
+            results.first().map(|(_, d)| d.name.as_str()).unwrap_or("上面的工具")
+        ));
+
+        Some(Ok(out))
+    }
+
+    fn permission_level(&self, tool_name: &str) -> carrier_types::tool::PermissionLevel {
+        if tool_name == "tool_search" {
+            carrier_types::tool::PermissionLevel::None
+        } else {
+            carrier_types::tool::PermissionLevel::Dangerous
+        }
+    }
+}
