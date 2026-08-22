@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types"]
+members = ["crates/carrier", "crates/types", "crates/memory"]
 
 [workspace.package]
 version = "0.1.0"
@@ -45,6 +45,14 @@ rmp-serde = "1"
 
 # Internal crates
 carrier-types = { path = "crates/types" }
+
+rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+regex = "1"
+lazy_static = "1.4"
+dashmap = "6"
+tempfile = "3"
+
+carrier-memory = { path = "crates/memory" }
 
 [profile.release]
 lto = true
