@@ -7,7 +7,6 @@ description = "Core kernel for the OpenCarrier Agent OS"
 
 [dependencies]
 carrier-types = { path = "../types" }
-carrier-wechat-oa = { path = "../wechat-oa" }
 carrier-memory = { path = "../memory" }
 carrier-runtime = { path = "../runtime" }
 carrier-lifecycle = { path = "../lifecycle" }
