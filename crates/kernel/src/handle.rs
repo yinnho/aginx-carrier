@@ -1189,14 +1189,28 @@ impl CarrierKernel {
             .spawn_agent(manifest)
             .map_err(|e| CarrierError::Internal(format!("Spawn failed: {e}")))?;
 
-        let plugins = std::fs::read_to_string(workspace_dir.join("template.json"))
+        let template = std::fs::read_to_string(workspace_dir.join("template.json"))
             .ok()
-            .and_then(|s| carrier_clone::parse_template_manifest_lenient(&s))
-            .map(|t| t.plugins)
+            .and_then(|s| carrier_clone::parse_template_manifest_lenient(&s));
+        let plugins = template
+            .as_ref()
+            .map(|t| t.plugins.clone())
             .unwrap_or_default();
 
         if !plugins.is_empty() {
             self.resolve_plugin_dependencies(&plugins).await;
+        }
+
+        // ── aginx 入网钩子 ──
+        // 分身装好即入网：写 ~/.aginx/agents/<name>/aginx.toml，网关扫描即
+        // 可见。失败不挡安装（aginx 网关可以不存在）。
+        let (desc, ver) = match template.as_ref() {
+            Some(t) => (t.description.clone(), t.version.clone()),
+            None => (String::new(), String::new()),
+        };
+        if let Err(e) = crate::aginx_net::register_clone_default(&agent_name, &display_name, &desc, &ver)
+        {
+            tracing::warn!(name = %agent_name, error = %e, "aginx registration failed (clone still installed)");
         }
 
         tracing::info!(

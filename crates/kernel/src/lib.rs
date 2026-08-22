@@ -3,6 +3,7 @@
 //! The kernel manages agent lifecycles, memory, permissions, scheduling,
 //! and inter-agent communication.
 
+pub mod aginx_net;
 pub mod background;
 pub mod brain;
 pub mod capabilities;

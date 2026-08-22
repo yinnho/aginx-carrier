@@ -283,6 +283,7 @@ dependencies = [
  "chrono-tz",
  "cron",
  "dashmap",
+ "dirs",
  "ed25519-dalek",
  "futures",
  "hex",
