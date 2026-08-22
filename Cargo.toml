@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/lifecycle"]
 
 [workspace.package]
 version = "0.1.0"
@@ -61,6 +61,7 @@ flate2 = "1"
 tar = "0.4"
 
 carrier-clone = { path = "crates/clone" }
+carrier-lifecycle = { path = "crates/lifecycle" }
 
 [profile.release]
 lto = true
