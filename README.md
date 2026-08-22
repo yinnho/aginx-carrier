@@ -14,7 +14,12 @@
 
 ## 状态
 
-Phase 0 骨架建设中。搬运顺序：types → memory → runtime → kernel/lifecycle → clone → acp 桥（agent:// 打通）→ iLink 通道 → 三形态。
+Phase 0-5 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 + 剥多租户
++ wechat-oa 剥离 + 数据目录 pivot `~/.aginx/carrier/` + clone_install 入网钩子 +
+`aginx-carrier acp` stdio 桥）。**agent:// 第一刀已闭环**：本地 aginx 网关按
+`~/.aginx/agents/<clone>/aginx.toml` 拉起本桥，端到端真实 LLM 对话实测通过。
+
+下一步：iLink 通道 → 三形态（桌面 Tauri / 移动 UniFFI / 服务器）。
 
 ## 使用
 
