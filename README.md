@@ -14,13 +14,14 @@
 
 ## 状态
 
-Phase 0-6 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 + 剥多租户
+Phase 0-7a 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 + 剥多租户
 + wechat-oa 剥离 + 数据目录 pivot `~/.aginx/carrier/` + clone_install 入网钩子 +
-`aginx-carrier acp` stdio 桥 + iLink 通道与 `aginx-carrier start` 守护形态）。
+`aginx-carrier acp` stdio 桥 + iLink 通道与 `aginx-carrier start` 守护形态 +
+carrier lib 化 + crates/uniffi 移动绑定）。
 **agent:// 第一刀已闭环**：本地 aginx 网关按 `~/.aginx/agents/<clone>/aginx.toml`
 拉起本桥，端到端真实 LLM 对话实测通过。
 
-下一步：三形态（桌面 Tauri / 移动 UniFFI / 服务器）。
+下一步：桌面 aginxium 集成 / 移动 Kotlin·Swift 壳 / relay 段联调。
 
 ## 使用
 
