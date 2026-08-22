@@ -1338,21 +1338,6 @@ impl KernelConfig {
             ));
         }
 
-        // Auth config: if enabled, password_hash should be non-empty
-        if self.auth.enabled {
-            if self.auth.password_hash.is_empty() {
-                warnings.push(
-                    "auth.enabled=true but password_hash is empty — dashboard login will not work"
-                        .to_string(),
-                );
-            } else if !self.auth.password_hash.starts_with("$argon2") {
-                warnings.push(
-                    "password_hash is not Argon2id — consider upgrading for better security"
-                        .to_string(),
-                );
-            }
-        }
-
         // Numeric bounds
         if self.max_cron_jobs == 0 {
             warnings.push("max_cron_jobs is 0 — cron jobs will be disabled".to_string());
@@ -1427,11 +1412,6 @@ impl KernelConfig {
         // TTS timeout: min 1s
         if self.tts.timeout_secs == 0 {
             self.tts.timeout_secs = 30;
-        }
-
-        // Auth session TTL: min 1 hour
-        if self.auth.session_ttl_hours == 0 {
-            self.auth.session_ttl_hours = 168;
         }
 
         // user_input flow timeout: min 1h (fall back to default), max 30 days
