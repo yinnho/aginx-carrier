@@ -94,6 +94,20 @@ impl MemorySubstrate {
 
     /// Create an in-memory substrate (for testing).
     pub fn open_in_memory() -> CarrierResult<Self> {
+        // Tests share a per-process dir so cross-instance seq continuity
+        // is exercised without touching the real db location.
+        let events_root = std::env::temp_dir()
+            .join(format!("opencarrier-session-events-{}", std::process::id()));
+        Self::open_in_memory_with_events(events_root)
+    }
+
+    /// Create an in-memory substrate whose session-event log lives at
+    /// `events_root` (instead of the shared per-process temp dir).
+    ///
+    /// Borrowed turns (`run_borrowed_turn`) use this to point the event log at
+    /// a per-turn temp directory that is deleted when the turn ends — so a
+    /// borrowed session leaves no durable trace on the host.
+    pub fn open_in_memory_with_events(events_root: PathBuf) -> CarrierResult<Self> {
         let conn = Connection::open_in_memory().map_err(|e| CarrierError::Memory(e.to_string()))?;
         run_migrations(&conn).map_err(|e| CarrierError::Memory(e.to_string()))?;
         let shared = Arc::new(Mutex::new(conn));
@@ -111,12 +125,7 @@ impl MemorySubstrate {
             automation_rules: AutomationRuleStore::new(Arc::clone(&shared)),
             chain_resume: ChainResumeStore::new(Arc::clone(&shared)),
             content_root: PathBuf::from("/tmp/opencarrier_tree_content"),
-            // Tests share a per-process dir so cross-instance seq continuity
-            // is exercised without touching the real db location.
-            session_events: crate::session_events::SessionEventLog::new(
-                std::env::temp_dir()
-                    .join(format!("opencarrier-session-events-{}", std::process::id())),
-            ),
+            session_events: crate::session_events::SessionEventLog::new(events_root),
         })
     }
 

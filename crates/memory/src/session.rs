@@ -27,6 +27,72 @@ pub struct Session {
     pub label: Option<String>,
 }
 
+/// 借用机制的会话票据 — 用户侧持有的会话状态（session 只在用户侧持久）。
+///
+/// 借用轮（`run_borrowed_turn`）以票据进、以票据出：主人服务器把票据还原成
+/// `Session`，在内存级 substrate 上跑一轮，再把更新后的状态打包回票据还给
+/// 用户侧。服务器全程零持久化——票据就是会话的唯一真源，由用户自己保管、
+/// 下一轮再提交。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SessionTicket {
+    /// 票据格式版本（当前 1）。
+    pub version: u32,
+    /// 可选会话标签（透传到 Session.label）。
+    #[serde(default)]
+    pub label: Option<String>,
+    /// 完整对话历史。
+    #[serde(default)]
+    pub messages: Vec<Message>,
+    /// 旧轮摘要（L1 上下文层）。
+    #[serde(default)]
+    pub turn_summaries: Vec<TurnSummary>,
+    /// 上下文窗口 token 估计（跨轮保真压缩判断）。
+    #[serde(default)]
+    pub context_window_tokens: u64,
+}
+
+impl SessionTicket {
+    /// 当前票据版本。
+    pub const CURRENT_VERSION: u32 = 1;
+
+    /// 一张空票据（首轮借用）。
+    pub fn empty(label: Option<String>) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            label,
+            messages: Vec::new(),
+            turn_summaries: Vec::new(),
+            context_window_tokens: 0,
+        }
+    }
+}
+
+impl Session {
+    /// 从票据还原会话（借用轮入口）。每次借用都是一个全新的 session id ——
+    /// 服务器不记忆任何会话身份，票据即身份。
+    pub fn from_ticket(ticket: SessionTicket, agent_name: String) -> Self {
+        Self {
+            id: SessionId::new(),
+            agent_name,
+            messages: ticket.messages,
+            turn_summaries: ticket.turn_summaries,
+            context_window_tokens: ticket.context_window_tokens,
+            label: ticket.label,
+        }
+    }
+
+    /// 把当前会话状态打包成票据（借用轮出口），交还用户侧持久化。
+    pub fn to_ticket(&self) -> SessionTicket {
+        SessionTicket {
+            version: SessionTicket::CURRENT_VERSION,
+            label: self.label.clone(),
+            messages: self.messages.clone(),
+            turn_summaries: self.turn_summaries.clone(),
+            context_window_tokens: self.context_window_tokens,
+        }
+    }
+}
+
 /// Session store backed by SQLite.
 #[derive(Clone)]
 pub struct SessionStore {
@@ -1144,5 +1210,48 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_session_ticket_roundtrip() {
+        let session = Session {
+            id: SessionId::new(),
+            agent_name: "gaokao-advisor".to_string(),
+            messages: vec![
+                Message::user("我模考 580 分"),
+                Message::assistant("能冲哪些 985？"),
+            ],
+            turn_summaries: vec![TurnSummary {
+                turn_number: 1,
+                timestamp: "2026-08-22T00:00:00Z".to_string(),
+                user_intent: "咨询高考志愿".to_string(),
+                assistant_outcome: "给出冲稳保建议".to_string(),
+                tools_used: vec![],
+                key_facts: vec!["模考 580 分".to_string()],
+            }],
+            context_window_tokens: 1234,
+            label: Some("borrow:gaokao-advisor".to_string()),
+        };
+
+        let ticket = session.to_ticket();
+        assert_eq!(ticket.version, SessionTicket::CURRENT_VERSION);
+        assert_eq!(ticket.messages.len(), 2);
+        assert_eq!(ticket.turn_summaries.len(), 1);
+        assert_eq!(ticket.context_window_tokens, 1234);
+
+        // JSON round-trip over the wire (what the ACP bridge sends/receives).
+        let json = serde_json::to_string(&ticket).unwrap();
+        let decoded: SessionTicket = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.messages.len(), 2);
+        assert_eq!(decoded.turn_summaries.len(), 1);
+        assert_eq!(decoded.label.as_deref(), Some("borrow:gaokao-advisor"));
+
+        // from_ticket restores a Session with a fresh id but the same state.
+        let restored = Session::from_ticket(decoded, "gaokao-advisor".to_string());
+        assert_eq!(restored.agent_name, "gaokao-advisor");
+        assert_eq!(restored.messages.len(), 2);
+        assert_eq!(restored.turn_summaries.len(), 1);
+        assert_eq!(restored.context_window_tokens, 1234);
+        assert_ne!(restored.id.0, session.id.0); // 全新 session id——服务器不记忆身份
     }
 }

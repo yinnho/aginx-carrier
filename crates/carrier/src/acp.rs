@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use carrier_kernel::kernel::CarrierKernel;
+use carrier_memory::session::SessionTicket;
 use carrier_types::agent::AgentId;
 
 /// One ACP session = one kernel agent + a cancellation flag.
@@ -262,6 +263,23 @@ async fn handle_prompt(
 
     let kernel = Arc::clone(state.kernel.lock().unwrap().as_ref().unwrap());
     let cancelled = Arc::clone(&session.cancelled);
+
+    // 借用机制：`session/prompt` 带 `sessionTicket` → 无状态借用轮（会话票据进/
+    // 出，主人服务器零持久化）。不带 ticket → 维持现有持久 session（向后兼容）。
+    if let Some(ticket_val) = params.get("sessionTicket").cloned() {
+        handle_borrowed_prompt(
+            Arc::clone(&out),
+            id,
+            sid,
+            kernel,
+            session.agent_id,
+            text,
+            ticket_val,
+        )
+        .await;
+        return;
+    }
+
     // Each ACP session runs in its own kernel session (`acp:<id>` label —
     // session isolation refuses unlabeled turns). channel_type keeps the
     // channel-side paths happy without claiming a real channel.
@@ -303,6 +321,53 @@ async fn handle_prompt(
             respond(&out, &id, serde_json::json!({"stopReason": "cancelled"}))
         }
         Err(e) => respond_error(&out, &id, -32002, &format!("agent turn failed: {e}")),
+    }
+}
+
+/// 借用轮处理：会话票据进/出，走 `run_borrowed_turn`（无状态，主人服务器零持久化）。
+async fn handle_borrowed_prompt(
+    out: Arc<Mutex<std::io::Stdout>>,
+    id: serde_json::Value,
+    sid: String,
+    kernel: Arc<CarrierKernel>,
+    agent_id: AgentId,
+    text: String,
+    ticket_val: serde_json::Value,
+) {
+    let ticket: SessionTicket = match serde_json::from_value(ticket_val) {
+        Ok(t) => t,
+        Err(e) => {
+            respond_error(&out, &id, -32602, &format!("invalid sessionTicket: {e}"));
+            return;
+        }
+    };
+
+    match kernel
+        .run_borrowed_turn(agent_id, ticket, &text, None, None, None)
+        .await
+    {
+        Ok(result) => {
+            if !result.response.trim().is_empty() {
+                update(
+                    &out,
+                    &sid,
+                    serde_json::json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": result.response},
+                    }),
+                );
+            }
+            // 返回更新后的票据——会话真源在用户侧，服务器无状态。
+            respond(
+                &out,
+                &id,
+                serde_json::json!({
+                    "stopReason": "end_turn",
+                    "sessionTicket": result.ticket,
+                }),
+            );
+        }
+        Err(e) => respond_error(&out, &id, -32002, &format!("borrowed turn failed: {e}")),
     }
 }
 

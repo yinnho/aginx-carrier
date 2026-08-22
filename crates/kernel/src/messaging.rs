@@ -99,6 +99,23 @@ struct PreparedContext {
     flow: Option<crate::prompt_sources::FlowMatch>,
 }
 
+/// 借用轮结果 — 响应文本 + 更新后的会话票据（交还用户侧持久化）。
+///
+/// 主人服务器对借用者无状态：会话的唯一真源是这张票据，由用户侧保管、下一轮
+/// 再提交。`ticket` 已含本轮 user/assistant 消息与最新 turn_summaries。
+pub struct BorrowedTurnOutcome {
+    /// 本轮最终文本响应。
+    pub response: String,
+    /// 是否为有意不回复的静默轮。
+    pub silent: bool,
+    /// 更新后的会话票据（用户侧持久化）。
+    pub ticket: carrier_memory::session::SessionTicket,
+    /// 本轮全部 LLM 调用的累计 token 用量。
+    pub total_usage: carrier_types::message::TokenUsage,
+    /// agent loop 实际迭代轮数。
+    pub iterations: u32,
+}
+
 impl CarrierKernel {
     /// Inject flow-declared tools into the turn's tool list.
     ///
@@ -1900,6 +1917,135 @@ impl CarrierKernel {
         })
     }
 
+    /// 借用机制 · 离线会话轮 — 会话以票据进、以票据出，主人服务器零持久化。
+    ///
+    /// 复用 `run_agent_loop`，但喂它一块内存级 `MemorySubstrate`（事件日志落在
+    /// 每轮独立 temp 目录、轮末销毁），跳过 `prepare_agent_context` 的 session
+    /// 加载 + kv 持久化路径。借用者在主人服务器没有持久记忆：drawer/recall/tree
+    /// 一律为空，kv/tree 工具只写进临时 substrate、随轮销毁。
+    ///
+    /// 与 `execute_llm_agent` 是平行的新路径——生产热路径零改动。不做自动
+    /// flow classify；要 flow 就传显式 `active_flow`（确定性按名加载）。
+    pub async fn run_borrowed_turn(
+        &self,
+        agent_id: AgentId,
+        ticket: carrier_memory::session::SessionTicket,
+        message: &str,
+        kernel_handle: Option<Arc<dyn KernelHandle>>,
+        active_flow: Option<&str>,
+        stream_tx: Option<tokio::sync::mpsc::Sender<StreamEvent>>,
+    ) -> KernelResult<BorrowedTurnOutcome> {
+        let entry = self.registry.get(agent_id).ok_or_else(|| {
+            KernelError::Carrier(CarrierError::AgentNotFound(agent_id.to_string()))
+        })?;
+        let agent_name = entry.name.clone();
+        let mut manifest = entry.manifest.clone();
+
+        // 会话从票据还原（全新 session id——服务器不记忆会话身份，票据即身份）。
+        let mut session =
+            carrier_memory::session::Session::from_ticket(ticket, agent_name.clone());
+        if session.label.is_none() {
+            session.label = Some(format!("borrow:{agent_name}"));
+        }
+
+        // 内存级 substrate + 每轮独立事件目录（轮末销毁）——借用轮零持久化。
+        let events_dir =
+            std::env::temp_dir().join(format!("aginx-borrow-{}", uuid::Uuid::new_v4()));
+        let ephemeral = Arc::new(
+            carrier_memory::MemorySubstrate::open_in_memory_with_events(events_dir.clone())
+                .map_err(KernelError::Carrier)?,
+        );
+
+        let mut tools = self.resolve_tools(&entry);
+
+        // 显式 flow（确定性按名加载，不接 send-time classifier）。
+        let mut auto_matched_flow: Option<String> = None;
+        if let Some(flow_name) = active_flow {
+            if let Some(ws) = manifest.workspace.as_ref() {
+                if let Some(flow) = crate::prompt_sources::load_flow_by_name(ws, flow_name) {
+                    Self::apply_flow_elevation(&mut tools, &mut manifest, &flow, &agent_name);
+                    auto_matched_flow = Some(flow.name.clone());
+                } else {
+                    warn!(agent = %agent_name, flow = %flow_name, "borrowed turn: active_flow not found, running bare");
+                }
+            }
+        }
+
+        // Prompt：借用者无持久记忆——drawer/recall 一律为空（无状态的核心）。
+        let turn_summaries = session.turn_summaries.clone();
+        let sender_id: Option<String> = None;
+        let owner_id: Option<String> = None;
+        self.build_and_apply_prompt(
+            &mut manifest,
+            &tools,
+            &sender_id,
+            None,
+            &owner_id,
+            auto_matched_flow,
+            turn_summaries,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
+
+        let driver = self.resolve_driver(&manifest)?;
+
+        let brain_ref: Option<Arc<dyn carrier_runtime::llm_driver::Brain>> =
+            Some(Arc::clone(&*self.brain.brain.read().unwrap_or_else(|e| {
+                warn!("Brain RwLock poisoned, recovering");
+                e.into_inner()
+            })) as Arc<dyn carrier_runtime::llm_driver::Brain>);
+
+        // In-process memory handle over the ephemeral substrate——kv/tree 工具
+        // 写进临时 substrate（随轮销毁），且绝不走 aginxMemory 外置路由（防借用者
+        // 记忆泄漏进共享 PG）。
+        let memory_handle: Arc<dyn carrier_runtime::memory_handle::MemoryHandle> =
+            Arc::new(crate::handle::MemorySubstrateHandle::new(Arc::clone(&ephemeral)));
+
+        let result = run_agent_loop(
+            &manifest,
+            message,
+            &mut session,
+            &ephemeral,
+            driver,
+            &tools,
+            kernel_handle,
+            stream_tx,
+            Some(&self.plugins.mcp_connections),
+            Some(&self.services.fetch_engine),
+            manifest.workspace.as_deref(),
+            None,
+            Some(&self.coordination.hooks),
+            None,
+            Some(&self.coordination.process_manager),
+            None,
+            brain_ref,
+            Some(memory_handle),
+            None,
+            None,
+            Some("borrow"),
+            Some(self.runtime.llm_concurrency_limit.clone()),
+        )
+        .await
+        .map_err(KernelError::Carrier)?;
+
+        let outcome = BorrowedTurnOutcome {
+            response: result.response,
+            silent: result.silent,
+            ticket: session.to_ticket(),
+            total_usage: result.total_usage,
+            iterations: result.iterations,
+        };
+
+        // 轮末销毁每轮事件目录——借用轮在主机上零持久化。
+        if let Err(e) = std::fs::remove_dir_all(&events_dir) {
+            warn!(dir = %events_dir.display(), error = %e, "borrowed-turn events dir cleanup failed");
+        }
+
+        Ok(outcome)
+    }
+
     /// Execute the default LLM-based agent loop.
     #[allow(clippy::too_many_arguments)]
     async fn execute_llm_agent(
@@ -3219,6 +3365,115 @@ mod tests {
         assert_eq!(
             CarrierKernel::read_template_default_flow(&e3).as_deref(),
             Some("consultation")
+        );
+    }
+
+    /// 借用轮（第三刀 3.1）：票据进/出 + 上下文连续性 + 无状态断言。
+    ///
+    /// EchoDriver 回显它看到的全部 user 消息——第二轮能看见第一轮的内容
+    /// = 票据承载了会话连续性；真实 substrate 无 borrow label session 行
+    /// = 主人服务器零持久化。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn borrowed_turn_carries_ticket_context_and_leaves_no_server_state() {
+        use carrier_memory::session::SessionTicket;
+        use carrier_runtime::llm_driver::{
+            CompletionRequest, CompletionResponse, LlmDriver, LlmError,
+        };
+        use carrier_types::brain::{BrainConfig, ModalityEntry};
+        use carrier_types::message::{ContentBlock, Role, StopReason, TokenUsage};
+
+        struct EchoDriver;
+        #[async_trait::async_trait]
+        impl LlmDriver for EchoDriver {
+            async fn complete(
+                &self,
+                request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                let users: Vec<String> = request
+                    .messages
+                    .iter()
+                    .filter(|m| m.role == Role::User)
+                    .map(|m| m.content.text_content())
+                    .collect();
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: format!("ECHO[{}] {}", users.len(), users.join("|")),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                    media: None,
+                })
+            }
+        }
+
+        let (_tmp, kernel) = boot_test_kernel();
+        // boot_test_kernel 的 brain 指向不可达 URL——换成 EchoDriver。
+        let brain_config = BrainConfig {
+            base_url: "http://127.0.0.1:1/v1/chat/completions".to_string(),
+            api_key_env: String::new(),
+            default_modality: "chat".to_string(),
+            modalities: HashMap::from([(
+                "chat".to_string(),
+                ModalityEntry {
+                    description: "test".to_string(),
+                },
+            )]),
+        };
+        *kernel.brain.brain.write().unwrap() = Arc::new(crate::brain::Brain::with_test_driver(
+            brain_config,
+            Arc::new(EchoDriver),
+        ));
+
+        // run_borrowed_turn 经 registry 解析 agent——直接注册测试 entry。
+        let entry = entry_with_workspace(std::path::Path::new("/tmp/nonexistent-ws"));
+        let agent_id = entry.id;
+        kernel.registry.register(entry).expect("agent should register");
+
+        // 第一轮：空票据进。
+        let out1 = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "ALPHA-MARKER", None, None, None)
+            .await
+            .expect("first borrowed turn should succeed");
+        assert!(!out1.response.is_empty());
+        assert!(
+            out1.response.contains("ALPHA-MARKER"),
+            "echo saw the user message: {}",
+            out1.response
+        );
+        // 票据长出了本轮 user+assistant 对；label 兜底 borrow:<agent>。
+        assert!(out1.ticket.messages.len() >= 2);
+        assert_eq!(out1.ticket.label.as_deref(), Some("borrow:test-agent"));
+
+        // 第二轮：回喂第一轮票据——echo 必须同时看见 ALPHA 与 BETA。
+        let out2 = kernel
+            .run_borrowed_turn(agent_id, out1.ticket, "BETA-MARKER", None, None, None)
+            .await
+            .expect("second borrowed turn should succeed");
+        assert!(
+            out2.response.contains("ALPHA-MARKER") && out2.response.contains("BETA-MARKER"),
+            "ticket carried turn-1 context into turn 2: {}",
+            out2.response
+        );
+
+        // 无状态断言：真实 substrate 无 borrow label 的 session 行。
+        let rows = kernel.memory.list_sessions().expect("list_sessions");
+        let borrow_rows = rows
+            .iter()
+            .filter(|r| {
+                r.get("label")
+                    .and_then(|l| l.as_str())
+                    .map(|l| l.starts_with("borrow:"))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            borrow_rows, 0,
+            "borrowed turns must not persist sessions on the host"
         );
     }
 }

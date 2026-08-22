@@ -175,6 +175,18 @@ impl Brain {
         })
     }
 
+    /// Test-only: build a Brain around an injected driver (fake driver in
+    /// unit tests — no real aginxbrain call, `new()`'s eager driver creation
+    /// is bypassed).
+    #[cfg(test)]
+    pub(crate) fn with_test_driver(config: BrainConfig, driver: Arc<dyn LlmDriver>) -> Self {
+        Self {
+            config,
+            driver: Some(driver),
+            health: DashMap::new(),
+        }
+    }
+
     // ── Query interface ─────────────────────────────────────
 
     /// List all available modalities with descriptions.
