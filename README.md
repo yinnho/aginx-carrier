@@ -19,9 +19,11 @@ Phase 0-7a 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 
 `aginx-carrier acp` stdio 桥 + iLink 通道与 `aginx-carrier start` 守护形态 +
 carrier lib 化 + crates/uniffi 移动绑定）。
 **agent:// 第一刀已闭环**：本地 aginx 网关按 `~/.aginx/agents/<clone>/aginx.toml`
-拉起本桥，端到端真实 LLM 对话实测通过。
+拉起本桥，端到端真实 LLM 对话实测通过。**relay 段已打通**：`agc agent://<id>.relay.yinnho.cn/<clone>`
+经 relay.yinnho.cn:8443 → 网关 relay 模式 → 桥（stdin 首行嗅探双模：ACP / one-shot ask）
+→ 分身流式回答，全链实测通过。
 
-下一步：桌面 aginxium 集成 / 移动 Kotlin·Swift 壳 / relay 段联调。
+下一步：桌面 aginxium 集成 / 移动 Kotlin·Swift 壳。
 
 ## 使用
 
