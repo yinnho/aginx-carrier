@@ -1,0 +1,39 @@
+namespace carrier {
+  CarrierRuntime init_carrier();
+};
+
+// One outbound event from the runtime to the UI. Stream events (TextDelta,
+// ToolUseStart, ...) are mapped into this flat enum for FFI friendliness.
+[Enum]
+interface ChatEvent {
+  Delta(string text);
+  ToolStart(string name);
+  ToolDone(string name, string preview, boolean is_error);
+  Phase(string phase, string? detail);
+  Done(string response, u64 input_tokens, u64 output_tokens);
+  Error(string message);
+};
+
+// Kotlin/Swift-side callback receiving streamed events.
+interface ChatListener {
+  void on_event(ChatEvent event);
+};
+
+interface CarrierRuntime {
+  constructor();
+
+  // List installed clones (name + display name + description).
+  sequence<CloneInfo> list_clones();
+
+  // Send a message; events stream to `listener` until Done/Error.
+  void send_message(string clone_name, string text, ChatListener listener);
+
+  // Graceful shutdown — drops kernel, background loops, channel watchers.
+  void shutdown();
+};
+
+dictionary CloneInfo {
+  string name;
+  string display_name;
+  string description;
+};

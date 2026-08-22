@@ -1,0 +1,26 @@
+[package]
+name = "carrier-uniffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "aginx-carrier 移动形态：内嵌运行时的 UniFFI 绑定（Kotlin/Swift）"
+
+[lib]
+name = "carrier_uniffi"
+# rlib 供 Rust 侧集成测试；cdylib/staticlib 供移动 ABI。
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+uniffi = { workspace = true }
+carrier = { workspace = true }
+carrier-kernel = { workspace = true }
+carrier-runtime = { workspace = true }
+carrier-types = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+tracing.workspace = true
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }
