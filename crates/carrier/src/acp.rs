@@ -35,6 +35,11 @@ struct BridgeState {
 /// Run the bridge until stdin closes. Never returns normally on I/O death —
 /// errors bubble to `main` and kill the process (the gateway respawns on
 /// demand).
+///
+/// stdin sniffing: if the first line is an ACP JSON-RPC message, run the ACP
+/// bridge; otherwise run one-shot `ask` mode (the gateway's `PromptAdapter`
+/// writes a bare prompt line to stdin and expects stdout lines back). Both
+/// modes share the same `aginx.toml` command entry.
 pub fn run(clone: String) -> anyhow::Result<()> {
     // All logs to stderr — stdout is protocol-only.
     tracing_subscriber::fmt()
@@ -44,6 +49,27 @@ pub fn run(clone: String) -> anyhow::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
+
+    // Sniff the first stdin line to pick ACP-bridge vs one-shot-ask mode.
+    let mut stdin_lines = std::io::stdin().lock().lines();
+    let first = match stdin_lines.next() {
+        Some(Ok(l)) => l,
+        Some(Err(_)) | None => return Ok(()),
+    };
+    let is_acp = first.trim().starts_with('{')
+        && serde_json::from_str::<serde_json::Value>(first.trim())
+            .map(|v| v.get("jsonrpc").is_some())
+            .unwrap_or(false);
+
+    if !is_acp {
+        // One-shot ask: remaining lines join the first as the message.
+        let mut msg = first;
+        for l in stdin_lines.map_while(Result::ok) {
+            msg.push('\n');
+            msg.push_str(&l);
+        }
+        return run_ask(&clone, &msg);
+    }
 
     let state = Arc::new(BridgeState {
         clone,
@@ -58,6 +84,7 @@ pub fn run(clone: String) -> anyhow::Result<()> {
         .build()?;
     runtime.block_on(async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tx.send(first).ok();
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
@@ -289,6 +316,68 @@ async fn wait_cancelled(flag: Arc<AtomicBool>) {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }
+
+/// One-shot `ask` mode — the gateway `PromptAdapter` contract: prompt on
+/// stdin, response lines on stdout, exit 0 on success / non-zero on failure.
+///
+/// Streams each `TextDelta` to stdout as it arrives so the gateway can emit
+/// `chunk` notifications progressively; a trailing newline flushes the last
+/// line through the adapter's line reader.
+fn run_ask(clone: &str, message: &str) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let kernel = CarrierKernel::boot(None)
+            .map_err(|e| anyhow::anyhow!("kernel boot failed: {e}"))?;
+        let kernel = Arc::new(kernel);
+        kernel.set_self_handle();
+        let kh: Arc<dyn carrier_runtime::kernel_handle::KernelHandle> = kernel.clone();
+        let entry = kernel
+            .registry
+            .find_by_name(clone)
+            .ok_or_else(|| anyhow::anyhow!("clone '{clone}' not installed on this carrier"))?;
+        let agent_id = entry.id;
+
+        let (mut rx, handle) = kernel
+            .send_message_streaming(
+                agent_id,
+                message,
+                Some(kh),
+                Some(format!("ask:{clone}")),
+                None,
+                None,
+                Some("ask".to_string()),
+                None,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("turn failed to start: {e}"))?;
+
+        use std::io::Write as _;
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        while let Some(ev) = rx.recv().await {
+            if let carrier_runtime::llm_driver::StreamEvent::TextDelta { text } = ev {
+                write!(out, "{text}").ok();
+                out.flush().ok();
+            }
+        }
+        match handle.await {
+            Ok(Ok(result)) => {
+                writeln!(out).ok();
+                out.flush().ok();
+                if result.response.trim().is_empty() {
+                    // Silent turn — still a clean exit.
+                    return Ok(());
+                }
+                Ok(())
+            }
+            Ok(Err(e)) => Err(anyhow::anyhow!("agent turn failed: {e}")),
+            Err(e) => Err(anyhow::anyhow!("agent turn task panicked: {e}")),
+        }
+    })
+}
+
 
 fn emit(out: &Arc<Mutex<std::io::Stdout>>, value: serde_json::Value) {
     let mut w = out.lock().unwrap();

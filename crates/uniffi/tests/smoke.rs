@@ -4,7 +4,6 @@
 //! 只验 Rust 侧绑定表面能 boot + list + 走通 send_message 的事件流。
 //! 真机 Kotlin/Swift 壳的联调留给 Phase 7 移动形态落地时。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 struct RecordingListener {
