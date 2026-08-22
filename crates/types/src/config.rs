@@ -1,0 +1,1587 @@
+//! Configuration types for the Carrier kernel.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Controls what usage info appears in response footers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageFooterMode {
+    /// Don't show usage info.
+    Off,
+    /// Show token counts only.
+    Tokens,
+    /// Show estimated cost only.
+    Cost,
+    /// Show tokens + cost (default).
+    #[default]
+    Full,
+}
+
+/// Kernel operating mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelMode {
+    /// Conservative mode — no auto-updates, pinned models, stability-first.
+    Stable,
+    /// Default balanced mode.
+    #[default]
+    Default,
+    /// Developer mode — experimental features enabled.
+    Dev,
+}
+
+/// Web tools configuration (search + fetch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// Cache TTL in minutes (0 = disabled).
+    pub cache_ttl_minutes: u64,
+    /// Web fetch configuration.
+    pub fetch: WebFetchConfig,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            cache_ttl_minutes: 15,
+            fetch: WebFetchConfig::default(),
+        }
+    }
+}
+
+/// Web fetch configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebFetchConfig {
+    /// Maximum characters to return in content.
+    pub max_chars: usize,
+    /// Maximum response body size in bytes.
+    pub max_response_bytes: usize,
+    /// HTTP request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Enable HTML→Markdown readability extraction.
+    pub readability: bool,
+}
+
+impl Default for WebFetchConfig {
+    fn default() -> Self {
+        Self {
+            max_chars: 50_000,
+            max_response_bytes: 10 * 1024 * 1024, // 10 MB
+            timeout_secs: 30,
+            readability: true,
+        }
+    }
+}
+
+/// Browser backend preference.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserBackend {
+    /// Auto-detect: try obscura first, fall back to chromium.
+    #[default]
+    Auto,
+    /// Force use of Obscura.
+    Obscura,
+    /// Force use of Chromium.
+    Chromium,
+}
+
+/// Browser automation configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// Preferred browser backend. Default: auto (obscura with chromium fallback).
+    pub backend: BrowserBackend,
+    /// Run browser in headless mode (no visible window).
+    pub headless: bool,
+    /// Viewport width in pixels.
+    pub viewport_width: u32,
+    /// Viewport height in pixels.
+    pub viewport_height: u32,
+    /// Per-action timeout in seconds.
+    pub timeout_secs: u64,
+    /// Idle timeout — auto-close session after this many seconds of inactivity.
+    pub idle_timeout_secs: u64,
+    /// Maximum concurrent browser sessions.
+    pub max_sessions: usize,
+    /// Path to Chromium/Chrome binary. Auto-detected if None.
+    pub chromium_path: Option<String>,
+    /// External CDP WebSocket endpoint (e.g., "ws://127.0.0.1:9222/devtools/browser").
+    /// When set, skips launching a browser process and connects directly.
+    /// Use this with Obscura (`obscura serve --port 9222`) or remote CDP servers.
+    pub cdp_endpoint: Option<String>,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            backend: BrowserBackend::default(),
+            headless: true,
+            viewport_width: 1280,
+            viewport_height: 720,
+            timeout_secs: 30,
+            idle_timeout_secs: 300,
+            max_sessions: 5,
+            chromium_path: None,
+            cdp_endpoint: None,
+        }
+    }
+}
+
+/// Config hot-reload mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReloadMode {
+    /// No automatic reloading.
+    Off,
+    /// Full restart on config change.
+    Restart,
+    /// Hot-reload safe sections only (channels, flows, heartbeat).
+    Hot,
+    /// Hot-reload where possible, flag restart-required otherwise.
+    #[default]
+    Hybrid,
+}
+
+/// Configuration for config file watching and hot-reload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReloadConfig {
+    /// Reload mode. Default: hybrid.
+    pub mode: ReloadMode,
+    /// Debounce window in milliseconds. Default: 500.
+    pub debounce_ms: u64,
+}
+
+impl Default for ReloadConfig {
+    fn default() -> Self {
+        Self {
+            mode: ReloadMode::default(),
+            debounce_ms: 500,
+        }
+    }
+}
+
+/// Webhook trigger authentication configuration.
+///
+/// Controls the `/hooks/wake` and `/hooks/agent` endpoints for external
+/// systems to trigger agent actions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebhookTriggerConfig {
+    /// Enable webhook trigger endpoints. Default: false.
+    pub enabled: bool,
+    /// Env var name holding the bearer token (NOT the token itself).
+    /// MUST be set if enabled=true. Token must be >= 32 chars.
+    pub token_env: String,
+    /// Max payload size in bytes. Default: 65536.
+    pub max_payload_bytes: usize,
+    /// Rate limit: max requests per minute per IP. Default: 30.
+    pub rate_limit_per_minute: u32,
+}
+
+impl Default for WebhookTriggerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token_env: "OPENCARRIER_WEBHOOK_TOKEN".to_string(),
+            max_payload_bytes: 65536,
+            rate_limit_per_minute: 30,
+        }
+    }
+}
+
+/// Text-to-speech configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsConfig {
+    /// Enable TTS. Default: false.
+    pub enabled: bool,
+    /// Default provider: "openai" or "elevenlabs".
+    pub provider: Option<String>,
+    /// OpenAI TTS settings.
+    pub openai: TtsOpenAiConfig,
+    /// ElevenLabs TTS settings.
+    pub elevenlabs: TtsElevenLabsConfig,
+    /// Max text length for TTS (chars). Default: 4096.
+    pub max_text_length: usize,
+    /// Timeout per TTS request in seconds. Default: 30.
+    pub timeout_secs: u64,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: None,
+            openai: TtsOpenAiConfig::default(),
+            elevenlabs: TtsElevenLabsConfig::default(),
+            max_text_length: 4096,
+            timeout_secs: 30,
+        }
+    }
+}
+
+/// OpenAI TTS settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsOpenAiConfig {
+    /// Voice: alloy, echo, fable, onyx, nova, shimmer. Default: "alloy".
+    pub voice: String,
+    /// Model: "tts-1" or "tts-1-hd". Default: "tts-1".
+    pub model: String,
+    /// Output format: "mp3", "opus", "aac", "flac". Default: "mp3".
+    pub format: String,
+    /// Speed: 0.25 to 4.0. Default: 1.0.
+    pub speed: f32,
+}
+
+impl Default for TtsOpenAiConfig {
+    fn default() -> Self {
+        Self {
+            voice: "alloy".to_string(),
+            model: "tts-1".to_string(),
+            format: "mp3".to_string(),
+            speed: 1.0,
+        }
+    }
+}
+
+/// ElevenLabs TTS settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsElevenLabsConfig {
+    /// Voice ID. Default: "21m00Tcm4TlvDq8ikWAM" (Rachel).
+    pub voice_id: String,
+    /// Model ID. Default: "eleven_monolingual_v1".
+    pub model_id: String,
+    /// Stability (0.0-1.0). Default: 0.5.
+    pub stability: f32,
+    /// Similarity boost (0.0-1.0). Default: 0.75.
+    pub similarity_boost: f32,
+}
+
+impl Default for TtsElevenLabsConfig {
+    fn default() -> Self {
+        Self {
+            voice_id: "21m00Tcm4TlvDq8ikWAM".to_string(),
+            model_id: "eleven_monolingual_v1".to_string(),
+            stability: 0.5,
+            similarity_boost: 0.75,
+        }
+    }
+}
+
+/// Credential vault configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VaultConfig {
+    /// Whether the vault is enabled (auto-detected if vault.enc exists).
+    pub enabled: bool,
+    /// Custom vault file path (default: ~/.opencarrier/vault.enc).
+    pub path: Option<PathBuf>,
+}
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+        }
+    }
+}
+
+/// Agent binding — routes specific channel/account/peer patterns to agents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBinding {
+    /// Target agent name or ID.
+    pub agent: String,
+    /// Match criteria (all specified fields must match).
+    pub match_rule: BindingMatchRule,
+}
+
+/// Match rule for agent bindings. All specified (non-None) fields must match.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BindingMatchRule {
+    /// Channel type (e.g., "discord", "telegram", "slack").
+    pub channel: Option<String>,
+    /// Specific account/bot ID within the channel.
+    pub account_id: Option<String>,
+    /// Peer/user ID for DM routing.
+    pub peer_id: Option<String>,
+    /// Guild/server ID (Discord/Slack).
+    pub guild_id: Option<String>,
+    /// Role-based routing (user must have at least one).
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+impl BindingMatchRule {
+    /// Calculate specificity score for binding priority ordering.
+    /// Higher = more specific = checked first.
+    pub fn specificity(&self) -> u32 {
+        let mut score = 0u32;
+        if self.peer_id.is_some() {
+            score += 8;
+        }
+        if self.guild_id.is_some() {
+            score += 4;
+        }
+        if !self.roles.is_empty() {
+            score += 2;
+        }
+        if self.account_id.is_some() {
+            score += 2;
+        }
+        if self.channel.is_some() {
+            score += 1;
+        }
+        score
+    }
+}
+
+/// Broadcast config — send same message to multiple agents.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BroadcastConfig {
+    /// Broadcast strategy.
+    pub strategy: BroadcastStrategy,
+    /// Map of peer_id -> list of agent names to receive the message.
+    pub routes: HashMap<String, Vec<String>>,
+}
+
+/// Broadcast delivery strategy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BroadcastStrategy {
+    /// Send to all agents simultaneously.
+    #[default]
+    Parallel,
+    /// Send to agents one at a time in order.
+    Sequential,
+}
+
+/// Canvas (Agent-to-UI) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CanvasConfig {
+    /// Enable canvas tool. Default: false.
+    pub enabled: bool,
+    /// Max HTML size in bytes. Default: 512KB.
+    pub max_html_bytes: usize,
+    /// Allowed HTML tags (empty = all safe tags allowed).
+    #[serde(default)]
+    pub allowed_tags: Vec<String>,
+}
+
+impl Default for CanvasConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_html_bytes: 512 * 1024,
+            allowed_tags: Vec::new(),
+        }
+    }
+}
+
+/// Shell/exec security mode.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecSecurityMode {
+    /// Block all shell execution.
+    #[serde(alias = "none", alias = "disabled")]
+    Deny,
+    /// Only allow commands in safe_bins or allowed_commands.
+    #[default]
+    #[serde(alias = "restricted")]
+    Allowlist,
+    /// Allow all commands (unsafe, dev only).
+    #[serde(alias = "allow", alias = "all", alias = "unrestricted")]
+    Full,
+}
+
+/// Shell/exec security policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecPolicy {
+    /// Security mode: "deny" blocks all, "allowlist" only allows listed,
+    /// "full" allows all (unsafe, dev only).
+    pub mode: ExecSecurityMode,
+    /// Commands that bypass allowlist (stdin-only utilities).
+    pub safe_bins: Vec<String>,
+    /// Global command allowlist (when mode = allowlist).
+    pub allowed_commands: Vec<String>,
+    /// Max execution timeout in seconds. Default: 30.
+    pub timeout_secs: u64,
+    /// Max output size in bytes. Default: 100KB.
+    pub max_output_bytes: usize,
+    /// No-output idle timeout in seconds. When > 0, kills processes that
+    /// produce no stdout/stderr output for this duration. Default: 30.
+    #[serde(default = "default_no_output_timeout")]
+    pub no_output_timeout_secs: u64,
+}
+
+fn default_no_output_timeout() -> u64 {
+    30
+}
+
+impl Default for ExecPolicy {
+    fn default() -> Self {
+        Self {
+            mode: ExecSecurityMode::default(),
+            safe_bins: vec![
+                "sleep", "true", "false", "cat", "sort", "uniq", "cut", "tr", "head", "tail", "wc",
+                "date", "echo", "printf", "basename", "dirname", "pwd", "env", "pandoc",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+            allowed_commands: Vec::new(),
+            timeout_secs: 30,
+            max_output_bytes: 100 * 1024,
+            no_output_timeout_secs: default_no_output_timeout(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gap 2: No-output idle timeout for subprocess sandbox
+// ---------------------------------------------------------------------------
+
+/// A whitelisted CLI command for the `cli_exec` tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliCommand {
+    /// Binary name (e.g. "gh", "todoist", "git").
+    pub name: String,
+    /// Human-readable description shown to the LLM.
+    pub description: String,
+    /// Example subcommands/args the LLM can use.
+    #[serde(default)]
+    pub examples: Vec<String>,
+}
+
+/// Configuration for the `cli_exec` tool — a restricted alternative to `shell_exec`.
+///
+/// Unlike `shell_exec` (PermissionLevel::Dangerous), `cli_exec` only allows
+/// commands explicitly listed in `commands`. Arguments are parsed with `shlex`
+/// and executed directly (no shell wrapper), making it safe for low-privilege agents.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CliExecConfig {
+    /// Whitelisted CLI commands. Empty = cli_exec disabled (tool not registered).
+    #[serde(default)]
+    pub commands: Vec<CliCommand>,
+}
+
+// ---------------------------------------------------------------------------
+// Gap 5: Docker sandbox maturity
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Gap 6: Typing indicator modes
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Gap 7: Thinking level support
+// ---------------------------------------------------------------------------
+
+/// Extended thinking configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThinkingConfig {
+    /// Maximum tokens for thinking (budget).
+    pub budget_tokens: u32,
+    /// Whether to stream thinking tokens to the client.
+    pub stream_thinking: bool,
+}
+
+impl Default for ThinkingConfig {
+    fn default() -> Self {
+        Self {
+            budget_tokens: 10_000,
+            stream_thinking: false,
+        }
+    }
+}
+
+/// Hub (openclone-hub) connection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HubConfig {
+    /// Hub server URL. Default: "https://hub.aginx.net"
+    pub url: String,
+    /// Environment variable name holding the API key (e.g. "OPENCLONE_HUB_KEY").
+    /// The API key is read from this env var at runtime.
+    pub api_key_env: String,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        Self {
+            url: "https://hub.aginx.net".to_string(),
+            api_key_env: "OPENCLONE_HUB_KEY".to_string(),
+        }
+    }
+}
+
+/// Budget configuration for cost/usage alerts.
+///
+/// Tracks cumulative token usage and fires alerts at configured
+/// percentage thresholds via channel messages.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BudgetConfig {
+    /// Monthly token budget (0 = unlimited, no alerts).
+    pub monthly_token_limit: u64,
+    /// Alert at these percentages of the budget (e.g. [50, 80, 100]).
+    pub alert_thresholds: Vec<u8>,
+    /// Channel type for alert delivery (e.g. "dingtalk", "feishu", "wecom").
+    pub alert_channel: Option<String>,
+    /// Recipient user/tenant identifier for alert messages.
+    pub alert_recipient: Option<String>,
+}
+
+/// Top-level kernel configuration.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KernelConfig {
+    /// Carrier home directory (default: ~/.opencarrier).
+    pub home_dir: PathBuf,
+    /// Data directory for databases (default: ~/.opencarrier/data).
+    pub data_dir: PathBuf,
+    /// Log level (trace, debug, info, warn, error).
+    pub log_level: String,
+    /// API listen address (e.g., "0.0.0.0:4200").
+    #[serde(alias = "listen_addr")]
+    pub api_listen: String,
+    /// Default LLM provider/model — DISPLAY-ONLY relic of the multi-provider
+    /// era. In single-layer Brain there is no "default model" to configure:
+    /// agents take their model from their own manifest / brain.json, and this
+    /// field is never read into an agent manifest. API writes are rejected
+    /// (config_set BLOCKED_KEYS, 2026-08-17); the field itself is kept only
+    /// because the CLI compiles against it — do not add new readers.
+    ///
+    /// `brain` (a path to brain.json) holds the authoritative driver/endpoint
+    /// config that boots the LLM subsystem.
+    #[serde(default)]
+    pub default_model: DefaultModelConfig,
+    /// Brain configuration — the carrier's independent LLM brain.
+    #[serde(default)]
+    pub brain: BrainSourceConfig,
+    /// Memory substrate configuration.
+    pub memory: MemoryConfig,
+    /// aginxMemory external service (kv+tree memory delegation).
+    /// Default: off (in-process memory). Set `database_url` to enable.
+    #[serde(default)]
+    pub aginx_memory: AginxMemoryConfig,
+    /// API authentication key. When set, all API endpoints (except /api/health)
+    /// require a `Authorization: Bearer <key>` header.
+    /// If empty, the API is unauthenticated (local development only).
+    #[serde(skip_serializing)]
+    pub api_key: String,
+    /// Kernel operating mode (stable, default, dev).
+    #[serde(default)]
+    pub mode: KernelMode,
+    /// Language/locale for CLI and messages (default: "en").
+    #[serde(default = "default_language")]
+    pub language: String,
+    /// MCP server configurations for external tool integration.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfigEntry>,
+    /// A2A (Agent-to-Agent) protocol configuration.
+    #[serde(default)]
+    pub a2a: Option<A2aConfig>,
+    /// Usage footer mode (what to show after each response).
+    #[serde(default)]
+    pub usage_footer: UsageFooterMode,
+    /// Web tools configuration (search + fetch).
+    #[serde(default)]
+    pub web: WebConfig,
+    /// Browser automation configuration.
+    #[serde(default)]
+    pub browser: BrowserConfig,
+    /// Credential vault configuration.
+    #[serde(default)]
+    pub vault: VaultConfig,
+    /// Root directory for agent workspaces. Default: `~/.opencarrier/workspaces`
+    #[serde(default)]
+    pub workspaces_dir: Option<PathBuf>,
+    /// Hub (openclone-hub) connection settings.
+    #[serde(default)]
+    pub hub: HubConfig,
+    /// Media understanding configuration.
+    #[serde(default)]
+    pub media: crate::media::MediaConfig,
+    /// Link understanding configuration.
+    #[serde(default)]
+    pub links: crate::media::LinkConfig,
+    /// Config hot-reload settings.
+    #[serde(default)]
+    pub reload: ReloadConfig,
+    /// Webhook trigger configuration (external event injection).
+    #[serde(default)]
+    pub webhook_triggers: Option<WebhookTriggerConfig>,
+    /// Budget configuration for cost/usage alerts.
+    #[serde(default)]
+    pub budget: BudgetConfig,
+    /// Cron scheduler max total jobs across all agents. Default: 500.
+    #[serde(default = "default_max_cron_jobs")]
+    pub max_cron_jobs: usize,
+    /// Master switch for chained-cron stall auto-resume (断链自动接续).
+    /// When true, a broken chained one-shot pipeline (step failed/timed out/
+    /// degenerate, completed without scheduling a successor, or stranded by
+    /// a mid-fire daemon restart) is silently re-fired from the breakpoint
+    /// step up to `MAX_AUTO_RESUMES` times, then escalated to workspace
+    /// admins. Default: true.
+    #[serde(default = "default_chain_resume_enabled")]
+    pub chain_resume_enabled: bool,
+    /// Default timeout (seconds) for `user_input` flow steps without an explicit
+    /// `timeout_hours`. A suspended flow past this deadline is reaped as
+    /// `timed_out`. Default: 86400 (24h).
+    #[serde(default = "default_user_input_timeout_secs")]
+    pub user_input_timeout_secs: u64,
+    /// Outer wall-clock backstop (seconds) for a single agent turn across all
+    /// trigger paths (HTTP /send, channel inbound, cron, inter-agent). Applied
+    /// at the `send_message_with_handle_and_blocks` chokepoint; cron jobs may
+    /// override per-job via `timeout_secs` (tighter wins). This is a daemon-hang
+    /// BACKSTOP only - the turn itself is governed by progress/stuck detection
+    /// (tool-call repetition + no-progress idle), not a time budget. Default:
+    /// 14400 (4h); set to 0 to disable the backstop entirely (rely solely on
+    /// stuck/progress detection + per-LLM-call stall timeout).
+    #[serde(default = "default_agent_turn_timeout_secs")]
+    pub agent_turn_timeout_secs: u64,
+    /// Config include files — loaded and deep-merged before the root config.
+    /// Paths are relative to the root config file's directory.
+    /// Security: absolute paths and `..` components are rejected.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// Shell/exec security policy.
+    #[serde(default)]
+    pub exec_policy: ExecPolicy,
+    /// CLI exec whitelist — restricted alternative to shell_exec for low-privilege agents.
+    #[serde(default)]
+    pub cli_exec: CliExecConfig,
+    /// Agent bindings for multi-account routing.
+    #[serde(default)]
+    pub bindings: Vec<AgentBinding>,
+    /// Broadcast routing configuration.
+    #[serde(default)]
+    pub broadcast: BroadcastConfig,
+    /// Canvas (A2UI) configuration.
+    #[serde(default)]
+    pub canvas: CanvasConfig,
+    /// Text-to-speech configuration.
+    #[serde(default)]
+    pub tts: TtsConfig,
+    /// Extended thinking configuration.
+    #[serde(default)]
+    pub thinking: Option<ThinkingConfig>,
+    /// OAuth client ID overrides for PKCE flows.
+    #[serde(default)]
+    pub oauth: OAuthConfig,
+    /// Dashboard authentication (username/password login).
+    #[serde(default)]
+    pub auth: AuthConfig,
+    /// Directory for auto-loading workflow JSON files on startup.
+    /// Clone lifecycle configuration (evolution, version tracking).
+    #[serde(default)]
+    pub clone_lifecycle: CloneLifecycleConfig,
+    /// Plugin directory for loading channel/tool plugins.
+    /// Each subdirectory should contain a plugin.toml and a shared library (.so/.dylib/.dll).
+    #[serde(default)]
+    pub plugins_dir: Option<PathBuf>,
+    /// External base URL for constructing download links (e.g. "https://carrier.yinnho.cn").
+    /// When set, the kernel appends output file download URLs to agent responses.
+    #[serde(default)]
+    pub external_url: Option<String>,
+    /// Tool whitelist — tools available to ALL agents without needing explicit declaration.
+    /// Non-whitelisted tools must be declared in the agent manifest's capabilities.tools
+    /// or via a ToolProfile. Default: empty (no free tools).
+    #[serde(default)]
+    pub whitelist_tools: Vec<String>,
+    /// Max concurrent LLM requests across all agents. Default: 10.
+    /// Prevents overwhelming the LLM API when many users send messages simultaneously.
+    #[serde(default = "default_llm_concurrency")]
+    pub llm_concurrency: usize,
+    /// Per-channel permission configuration. Key is channel_type (e.g. "weixin", "feishu").
+    /// Tools exceeding the channel's max_permission are filtered out before the LLM sees them.
+    #[serde(default)]
+    pub channels: HashMap<String, ChannelConfig>,
+    /// Trusted Ed25519 public keys for manifest signature verification (hex-encoded).
+    /// When empty, `verify()` is used (less secure — trusts embedded key).
+    /// When non-empty, `verify_with_trust_store()` is used instead.
+    #[serde(default)]
+    pub trusted_signing_keys: Vec<String>,
+    /// P1-C authority flip: load session history from the append-only event
+    /// log (`{data_dir}/session-events/`) instead of the sessions DB table.
+    /// The DB row stays as cache and identity index. Canaries per-deploy:
+    /// default off; enable in config.toml to flip a deployment, then fleet.
+    #[serde(default)]
+    pub session_event_source: bool,
+}
+
+/// Per-channel configuration for tool permission filtering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelConfig {
+    /// Maximum permission level allowed for this channel.
+    /// Tools with a higher permission level are hidden from the LLM.
+    /// Default: Dangerous (all tools allowed — backwards compatible).
+    pub max_permission: crate::tool::PermissionLevel,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            max_permission: crate::tool::PermissionLevel::Dangerous,
+        }
+    }
+}
+
+/// Clone lifecycle configuration — controls post-conversation learning and knowledge evolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CloneLifecycleConfig {
+    /// Enable post-conversation knowledge evolution for clones.
+    /// When true, conversations with clone agents are automatically analyzed
+    /// to extract new knowledge files.
+    pub evolution_enabled: bool,
+    /// Global master switch for autonomous self-growth (idle-time learn/create
+    /// cron). When false, no clone runs self-growth regardless of its EVOLUTION.md.
+    /// When true, a clone runs self-growth only if its EVOLUTION.md also sets
+    /// `self_growth_enabled: true`. Default off.
+    pub self_growth_enabled: bool,
+}
+
+impl Default for CloneLifecycleConfig {
+    fn default() -> Self {
+        Self {
+            evolution_enabled: true,
+            self_growth_enabled: false,
+        }
+    }
+}
+
+/// Dashboard authentication (username/password login).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    /// Enable username/password authentication for the dashboard.
+    pub enabled: bool,
+    /// Admin username.
+    pub username: String,
+    /// SHA256 hash of the password (hex-encoded).
+    /// Generate with: carrier auth hash-password
+    pub password_hash: String,
+    /// Session token lifetime in hours (default: 168 = 7 days).
+    pub session_ttl_hours: u64,
+    /// Trusted reverse proxy IP(s) for rate limiting by real client IP.
+    /// When set, x-real-ip / x-forwarded-for headers are only trusted from these IPs.
+    /// When empty, those headers are always trusted (legacy behavior — secure only behind a proxy).
+    #[serde(default)]
+    pub trusted_proxy: Vec<String>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            username: "admin".to_string(),
+            password_hash: String::new(),
+            session_ttl_hours: 168,
+            trusted_proxy: Vec::new(),
+        }
+    }
+}
+
+/// OAuth client ID overrides for PKCE flows.
+///
+/// Configure in config.toml:
+/// ```toml
+/// [oauth]
+/// google_client_id = "your-google-client-id"
+/// github_client_id = "your-github-client-id"
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OAuthConfig {
+    /// Google OAuth2 client ID for PKCE flow.
+    pub google_client_id: Option<String>,
+    /// GitHub OAuth client ID for PKCE flow.
+    pub github_client_id: Option<String>,
+    /// Microsoft (Entra ID) OAuth client ID.
+    pub microsoft_client_id: Option<String>,
+    /// Slack OAuth client ID.
+    pub slack_client_id: Option<String>,
+}
+
+fn default_max_cron_jobs() -> usize {
+    500
+}
+
+fn default_chain_resume_enabled() -> bool {
+    true
+}
+
+fn default_user_input_timeout_secs() -> u64 {
+    86_400
+}
+
+fn default_agent_turn_timeout_secs() -> u64 {
+    14_400
+}
+
+fn default_llm_concurrency() -> usize {
+    10
+}
+
+/// Configuration entry for an MCP server.
+///
+/// This is the config.toml representation. The runtime `McpServerConfig`
+/// struct is constructed from this during kernel boot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfigEntry {
+    /// Display name for this server.
+    pub name: String,
+    /// Brief description of what this MCP server does (shown to LLM in system prompt).
+    #[serde(default)]
+    pub description: String,
+    /// Transport configuration.
+    pub transport: McpTransportEntry,
+    /// Request timeout in seconds.
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout_secs: u64,
+    /// Environment variables to pass through (e.g., ["GITHUB_PERSONAL_ACCESS_TOKEN"]).
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
+fn default_mcp_timeout() -> u64 {
+    30
+}
+
+/// Transport configuration for an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpTransportEntry {
+    /// Subprocess with JSON-RPC over stdin/stdout.
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    /// HTTP Server-Sent Events.
+    Sse { url: String },
+}
+
+/// A2A (Agent-to-Agent) protocol configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct A2aConfig {
+    /// Whether A2A is enabled.
+    pub enabled: bool,
+    /// Path to serve A2A endpoints (default: "/a2a").
+    #[serde(default = "default_a2a_path")]
+    pub listen_path: String,
+    /// External A2A agents to connect to.
+    #[serde(default)]
+    pub external_agents: Vec<ExternalAgent>,
+}
+
+fn default_a2a_path() -> String {
+    "/a2a".to_string()
+}
+
+/// An external A2A agent to discover and interact with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalAgent {
+    /// Display name.
+    pub name: String,
+    /// Agent endpoint URL.
+    pub url: String,
+}
+
+fn default_language() -> String {
+    "en".to_string()
+}
+
+impl Default for KernelConfig {
+    fn default() -> Self {
+        let home = home_dir();
+        Self {
+            data_dir: home.join("data"),
+            home_dir: home,
+            log_level: "info".to_string(),
+            api_listen: "127.0.0.1:50051".to_string(),
+            default_model: DefaultModelConfig::default(),
+            brain: BrainSourceConfig::default(),
+            memory: MemoryConfig::default(),
+            aginx_memory: AginxMemoryConfig::default(),
+            api_key: String::new(),
+            mode: KernelMode::default(),
+            language: "en".to_string(),
+            mcp_servers: Vec::new(),
+            a2a: None,
+            usage_footer: UsageFooterMode::default(),
+            web: WebConfig::default(),
+            browser: BrowserConfig::default(),
+            vault: VaultConfig::default(),
+            workspaces_dir: None,
+            hub: HubConfig::default(),
+            media: crate::media::MediaConfig::default(),
+            links: crate::media::LinkConfig::default(),
+            reload: ReloadConfig::default(),
+            webhook_triggers: None,
+            budget: BudgetConfig::default(),
+            max_cron_jobs: default_max_cron_jobs(),
+            chain_resume_enabled: default_chain_resume_enabled(),
+            user_input_timeout_secs: default_user_input_timeout_secs(),
+            agent_turn_timeout_secs: default_agent_turn_timeout_secs(),
+            include: Vec::new(),
+            exec_policy: ExecPolicy::default(),
+            cli_exec: CliExecConfig::default(),
+            bindings: Vec::new(),
+            broadcast: BroadcastConfig::default(),
+            canvas: CanvasConfig::default(),
+            tts: TtsConfig::default(),
+            thinking: None,
+            oauth: OAuthConfig::default(),
+            auth: AuthConfig::default(),
+            clone_lifecycle: CloneLifecycleConfig::default(),
+            plugins_dir: None,
+            external_url: None,
+            whitelist_tools: Vec::new(),
+            llm_concurrency: default_llm_concurrency(),
+            channels: HashMap::new(),
+            trusted_signing_keys: Vec::new(),
+            session_event_source: false,
+        }
+    }
+}
+
+impl KernelConfig {
+    /// Resolved workspaces root directory.
+    pub fn effective_workspaces_dir(&self) -> PathBuf {
+        self.workspaces_dir
+            .clone()
+            .unwrap_or_else(|| self.home_dir.join("workspaces"))
+    }
+}
+
+/// SECURITY: Custom Debug impl redacts sensitive fields (api_key).
+impl std::fmt::Debug for KernelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KernelConfig")
+            .field("home_dir", &self.home_dir)
+            .field("data_dir", &self.data_dir)
+            .field("log_level", &self.log_level)
+            .field("api_listen", &self.api_listen)
+            .field("default_model", &self.default_model)
+            .field("memory", &self.memory)
+            .field(
+                "aginx_memory",
+                &format!("enabled={}", self.aginx_memory.database_url.is_some()),
+            )
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("mode", &self.mode)
+            .field("language", &self.language)
+            .field(
+                "mcp_servers",
+                &format!("{} server(s)", self.mcp_servers.len()),
+            )
+            .field("a2a", &self.a2a.as_ref().map(|a| a.enabled))
+            .field("usage_footer", &self.usage_footer)
+            .field("web", &self.web)
+            .field("browser", &self.browser)
+            .field("vault", &format!("enabled={}", self.vault.enabled))
+            .field("workspaces_dir", &self.workspaces_dir)
+            .field("hub", &format!("url={}", self.hub.url))
+            .field(
+                "media",
+                &format!(
+                    "image={} audio={} video={}",
+                    self.media.image_description,
+                    self.media.audio_transcription,
+                    self.media.video_description
+                ),
+            )
+            .field("links", &format!("enabled={}", self.links.enabled))
+            .field("reload", &self.reload.mode)
+            .field(
+                "webhook_triggers",
+                &self.webhook_triggers.as_ref().map(|w| w.enabled),
+            )
+            .field("max_cron_jobs", &self.max_cron_jobs)
+            .field("chain_resume_enabled", &self.chain_resume_enabled)
+            .field("include", &format!("{} file(s)", self.include.len()))
+            .field("exec_policy", &self.exec_policy.mode)
+            .field("bindings", &format!("{} binding(s)", self.bindings.len()))
+            .field(
+                "broadcast",
+                &format!("{} route(s)", self.broadcast.routes.len()),
+            )
+            .field("canvas", &format!("enabled={}", self.canvas.enabled))
+            .field("tts", &format!("enabled={}", self.tts.enabled))
+            .field("thinking", &self.thinking.is_some())
+            .field("auth", &format!("enabled={}", self.auth.enabled))
+            .finish()
+    }
+}
+
+/// Resolve the OpenCarrier home directory.
+///
+/// Priority: `OPENCARRIER_HOME` env var > `~/.opencarrier`.
+pub fn home_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("OPENCARRIER_HOME") {
+        return PathBuf::from(home);
+    }
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".opencarrier")
+}
+
+/// Resolve the per-sender-per-agent data directory under `workspaces/`.
+///
+/// Returns `workspaces/{agent_name}/senders/{owner_id}/` or
+/// `workspaces/{agent_name}/senders/{owner_id}/users/{user_id}/` when user_id differs from owner_id.
+///
+/// - `owner_id` is the route_key: for WeChat it's the openid, for WeCom/Feishu/DingTalk it's the bot_id/app_id/app_key.
+/// - `user_id` is the actual user identity from the platform message. When present and different
+///   from `owner_id`, the path becomes `workspaces/{agent_name}/senders/{owner_id}/users/{user_id}/`
+///   (group users under a bot). When `None` or equal to `owner_id`, the path is
+///   `workspaces/{agent_name}/senders/{owner_id}/` (the owner's own data).
+pub fn sender_data_dir(
+    home_dir: &std::path::Path,
+    owner_id: &str,
+    agent_name: &str,
+    user_id: Option<&str>,
+) -> PathBuf {
+    let safe_owner = sanitize_path_component(owner_id);
+    let safe_agent = sanitize_path_component(agent_name);
+    let base = home_dir
+        .join("workspaces")
+        .join(safe_agent)
+        .join("senders")
+        .join(safe_owner);
+    match user_id {
+        Some(uid) if uid != owner_id => base.join("users").join(sanitize_path_component(uid)),
+        _ => base,
+    }
+}
+
+/// Compute the shell working directory for an agent turn.
+///
+/// When a sender is present (per-user channel), returns the sender-scoped data
+/// directory so `shell_exec` and `file_write` land in the same directory
+/// (byte-aligned). Without a sender (CLI/system turns), falls back to the
+/// workspace root. This eliminates duplicated cwd resolution in the kernel
+/// and runtime layers — both call this single function.
+///
+/// The returned path is a subdirectory of the workspace:
+/// `workspaces/{agent}/senders/{owner}/` (sender-driven) or
+/// `workspace_root/` (CLI/system).
+pub fn resolve_turn_cwd(
+    home_dir: &std::path::Path,
+    workspace_root: &std::path::Path,
+    agent_name: &str,
+    sender_id: Option<&str>,
+    owner_id: Option<&str>,
+) -> std::path::PathBuf {
+    match sender_id {
+        Some(s) => {
+            let owner = owner_id.unwrap_or(s);
+            sender_data_dir(home_dir, owner, agent_name, Some(s))
+        }
+        None => workspace_root.to_path_buf(),
+    }
+}
+
+/// Compute a home-relative path under `workspaces/` for a given subdir (input/output/memory).
+///
+/// Returns a string like `workspaces/{agent_name}/senders/{owner_id}/{subdir}` or
+/// `workspaces/{agent_name}/senders/{owner_id}/users/{user_id}/{subdir}` when user_id differs from owner_id.
+pub fn sender_relative_path(
+    owner_id: &str,
+    agent_name: &str,
+    user_id: Option<&str>,
+    subdir: &str,
+) -> String {
+    let safe_owner = sanitize_path_component(owner_id);
+    let safe_agent = sanitize_path_component(agent_name);
+    let base = format!("workspaces/{}/senders/{}", safe_agent, safe_owner);
+    match user_id {
+        Some(uid) if uid != owner_id => {
+            format!("{}/users/{}/{}", base, sanitize_path_component(uid), subdir)
+        }
+        _ => format!("{}/{}", base, subdir),
+    }
+}
+
+/// Sanitize a path component to prevent directory traversal.
+/// Returns "_" for empty/unsafe values.
+pub fn sanitize_path_component(s: &str) -> &str {
+    if s.is_empty() || s.contains('/') || s.contains('\\') || s.contains("..") {
+        "_"
+    } else {
+        s
+    }
+}
+
+/// Scan all senders/*/session.json files and return (sender_id, raw_json) pairs.
+///
+/// Each entry corresponds to a sender directory that has a session.json.
+/// The `channel` field in the JSON identifies which platform owns it.
+pub fn scan_sender_sessions(home_dir: &std::path::Path) -> Vec<(String, serde_json::Value)> {
+    let senders_dir = home_dir.join("senders");
+    let mut results = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(&senders_dir) else {
+        return results;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let session_path = entry.path().join("session.json");
+        if session_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&session_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
+                    results.push((name, json));
+                }
+            }
+        }
+    }
+
+    results
+}
+
+/// Default LLM model configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DefaultModelConfig {
+    /// Model identifier.
+    pub model: String,
+    /// Environment variable name for the API key.
+    pub api_key_env: String,
+    /// Optional base URL override.
+    pub base_url: Option<String>,
+}
+
+impl Default for DefaultModelConfig {
+    fn default() -> Self {
+        Self {
+            model: "claude-sonnet-4-20250514".to_string(),
+            api_key_env: "ANTHROPIC_API_KEY".to_string(),
+            base_url: None,
+        }
+    }
+}
+
+/// Brain source configuration — tells the carrier where to load brain.json from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrainSourceConfig {
+    /// Path to brain.json, relative to home_dir. Default: "brain.json".
+    pub config: String,
+}
+
+impl Default for BrainSourceConfig {
+    fn default() -> Self {
+        Self {
+            config: "brain.json".to_string(),
+        }
+    }
+}
+
+/// Memory substrate configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// Path to SQLite database file.
+    pub sqlite_path: Option<PathBuf>,
+    /// Maximum memories before consolidation is triggered.
+    pub consolidation_threshold: u64,
+    /// How often to run memory consolidation (hours). 0 = disabled.
+    #[serde(default = "default_consolidation_interval")]
+    pub consolidation_interval_hours: u64,
+    /// Tree memory configuration (hierarchical memory system).
+    #[serde(default)]
+    pub tree: TreeMemoryConfig,
+}
+
+/// Configuration for the hierarchical tree memory system.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TreeMemoryConfig {
+    /// Root directory for tree memory content files (Obsidian-compatible .md).
+    /// Default: {data_dir}/memory_tree/content
+    #[serde(default)]
+    pub content_root: Option<String>,
+    /// Number of background worker tasks for tree jobs.
+    #[serde(default = "default_tree_worker_count")]
+    pub worker_count: usize,
+    /// Poll interval in seconds for the job queue.
+    #[serde(default = "default_tree_poll_interval")]
+    pub poll_interval_secs: u64,
+    /// Token budget for L0 buffer before sealing.
+    #[serde(default = "default_tree_input_token_budget")]
+    pub input_token_budget: u32,
+    /// Number of summaries to fan-out at each level.
+    #[serde(default = "default_tree_summary_fanout")]
+    pub summary_fanout: u32,
+    /// Age in seconds after which stale buffers are force-sealed.
+    #[serde(default = "default_tree_flush_age")]
+    pub flush_age_secs: i64,
+    /// Score threshold below which chunks are dropped.
+    #[serde(default = "default_tree_drop_threshold")]
+    pub drop_threshold: f32,
+    /// Maximum tokens per chunk.
+    #[serde(default = "default_tree_chunk_max_tokens")]
+    pub chunk_max_tokens: u32,
+    /// LLM model for summarisation. Empty = inert (concat-only).
+    #[serde(default)]
+    pub summariser_model: Option<String>,
+    /// Hotness threshold for entity topic tree materialisation.
+    #[serde(default = "default_tree_topic_hotness")]
+    pub topic_hotness_threshold: f32,
+}
+
+fn default_tree_worker_count() -> usize {
+    4
+}
+fn default_tree_poll_interval() -> u64 {
+    5
+}
+fn default_tree_input_token_budget() -> u32 {
+    50_000
+}
+fn default_tree_summary_fanout() -> u32 {
+    10
+}
+fn default_tree_flush_age() -> i64 {
+    604_800
+}
+fn default_tree_drop_threshold() -> f32 {
+    0.3
+}
+fn default_tree_chunk_max_tokens() -> u32 {
+    3_000
+}
+fn default_tree_topic_hotness() -> f32 {
+    3.0
+}
+
+impl Default for TreeMemoryConfig {
+    fn default() -> Self {
+        Self {
+            content_root: None,
+            worker_count: default_tree_worker_count(),
+            poll_interval_secs: default_tree_poll_interval(),
+            input_token_budget: default_tree_input_token_budget(),
+            summary_fanout: default_tree_summary_fanout(),
+            flush_age_secs: default_tree_flush_age(),
+            drop_threshold: default_tree_drop_threshold(),
+            chunk_max_tokens: default_tree_chunk_max_tokens(),
+            summariser_model: None,
+            topic_hotness_threshold: default_tree_topic_hotness(),
+        }
+    }
+}
+
+fn default_consolidation_interval() -> u64 {
+    24
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            sqlite_path: None,
+            consolidation_threshold: 10_000,
+            consolidation_interval_hours: default_consolidation_interval(),
+            tree: TreeMemoryConfig::default(),
+        }
+    }
+}
+
+/// aginxMemory external service configuration.
+///
+/// aginxMemory is a standalone daemon (`crates/aginx-memory`) that owns the
+/// kv+tree memory subsystem backed by PostgreSQL + Obsidian-compatible .md
+/// files. opencarrier delegates kv/tree operations to it over HTTP
+/// (`HttpMemoryHandle`); sessions and other runtime state stay in-process
+/// SQLite. When `database_url` is unset, memory stays fully in-process — this
+/// is the default and the migration-period fallback (gated by the
+/// `AGINXMEMORY_URL` env switch on the opencarrier side).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AginxMemoryConfig {
+    /// PostgreSQL connection string for the aginxMemory service.
+    /// None = aginxMemory disabled (memory stays in-process SQLite).
+    #[serde(default)]
+    pub database_url: Option<String>,
+    /// Listen address for the aginxMemory HTTP server (e.g. "127.0.0.1:4300").
+    #[serde(default)]
+    pub listen: Option<String>,
+    /// Root directory for tree memory .md content files.
+    /// Default: {data_dir}/memory_tree/content (same location as in-process tree).
+    #[serde(default)]
+    pub content_root: Option<PathBuf>,
+    /// Number of background tree-job workers. Default 0 — jobs are enqueued on
+    /// ingest but not consumed until this is raised, so the tree background
+    /// pipeline (seal/digest/topic_route, which has never run in-process) can be
+    /// ramped up cautiously after first activation.
+    #[serde(default = "default_aginx_worker_count")]
+    pub worker_count: usize,
+    /// Whether the daily digest / stale-flush scheduler runs. Default false —
+    /// enable only after validating the digest path manually.
+    #[serde(default)]
+    pub scheduler_enabled: bool,
+}
+
+fn default_aginx_worker_count() -> usize {
+    0
+}
+
+impl Default for AginxMemoryConfig {
+    fn default() -> Self {
+        Self {
+            database_url: None,
+            listen: None,
+            content_root: None,
+            worker_count: default_aginx_worker_count(),
+            scheduler_enabled: false,
+        }
+    }
+}
+
+impl KernelConfig {
+    /// Validate the configuration, returning a list of warnings.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        // API listen address
+        if !self.api_listen.is_empty() && !self.api_listen.contains(':') {
+            warnings.push(format!(
+                "api_listen '{}' may be missing a port",
+                self.api_listen
+            ));
+        }
+
+        // Auth config: if enabled, password_hash should be non-empty
+        if self.auth.enabled {
+            if self.auth.password_hash.is_empty() {
+                warnings.push(
+                    "auth.enabled=true but password_hash is empty — dashboard login will not work"
+                        .to_string(),
+                );
+            } else if !self.auth.password_hash.starts_with("$argon2") {
+                warnings.push(
+                    "password_hash is not Argon2id — consider upgrading for better security"
+                        .to_string(),
+                );
+            }
+        }
+
+        // Numeric bounds
+        if self.max_cron_jobs == 0 {
+            warnings.push("max_cron_jobs is 0 — cron jobs will be disabled".to_string());
+        }
+        if self.llm_concurrency == 0 {
+            warnings.push("llm_concurrency is 0 — no LLM requests will be allowed".to_string());
+        }
+        if self.max_cron_jobs > 10000 {
+            warnings.push(format!(
+                "max_cron_jobs={} is very high — may impact performance",
+                self.max_cron_jobs
+            ));
+        }
+
+        // Hub URL
+        if !self.hub.url.is_empty()
+            && !self.hub.url.starts_with("https://")
+            && !self.hub.url.starts_with("http://")
+        {
+            warnings.push(format!("hub.url '{}' is not HTTP(S)", self.hub.url));
+        }
+
+        warnings
+    }
+
+    /// Clamp configuration values to safe production bounds.
+    ///
+    /// Called after loading config to prevent zero timeouts, unbounded buffers,
+    /// or other misconfigurations that cause silent failures at runtime.
+    pub fn clamp_bounds(&mut self) {
+        // Browser timeout: min 5s, max 300s
+        if self.browser.timeout_secs == 0 {
+            self.browser.timeout_secs = 30;
+        } else if self.browser.timeout_secs > 300 {
+            self.browser.timeout_secs = 300;
+        }
+
+        // Browser max sessions: min 1, max 100
+        if self.browser.max_sessions == 0 {
+            self.browser.max_sessions = 3;
+        } else if self.browser.max_sessions > 100 {
+            self.browser.max_sessions = 100;
+        }
+
+        // Web fetch max_response_bytes: min 1KB, max 50MB
+        if self.web.fetch.max_response_bytes == 0 {
+            self.web.fetch.max_response_bytes = 5_000_000;
+        } else if self.web.fetch.max_response_bytes > 50_000_000 {
+            self.web.fetch.max_response_bytes = 50_000_000;
+        }
+
+        // Web fetch timeout: min 5s, max 120s
+        if self.web.fetch.timeout_secs == 0 {
+            self.web.fetch.timeout_secs = 30;
+        } else if self.web.fetch.timeout_secs > 120 {
+            self.web.fetch.timeout_secs = 120;
+        }
+
+        // Exec timeout: min 1s
+        if self.exec_policy.timeout_secs == 0 {
+            self.exec_policy.timeout_secs = 30;
+        }
+        if self.exec_policy.no_output_timeout_secs == 0 {
+            self.exec_policy.no_output_timeout_secs = 30;
+        }
+
+        // Browser idle timeout: min 1s
+        if self.browser.idle_timeout_secs == 0 {
+            self.browser.idle_timeout_secs = 300;
+        }
+
+        // TTS timeout: min 1s
+        if self.tts.timeout_secs == 0 {
+            self.tts.timeout_secs = 30;
+        }
+
+        // Auth session TTL: min 1 hour
+        if self.auth.session_ttl_hours == 0 {
+            self.auth.session_ttl_hours = 168;
+        }
+
+        // user_input flow timeout: min 1h (fall back to default), max 30 days
+        if self.user_input_timeout_secs == 0 {
+            self.user_input_timeout_secs = 86_400;
+        } else if self.user_input_timeout_secs > 2_592_000 {
+            self.user_input_timeout_secs = 2_592_000;
+        }
+
+        // agent turn timeout: 0 means "no backstop" (rely solely on stuck/
+        // progress detection + per-LLM-call stall timeout) - leave it as 0.
+        // Any positive value is the daemon-hang backstop in seconds.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = KernelConfig::default();
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.api_listen, "127.0.0.1:50051");
+    }
+
+    #[test]
+    fn test_agent_turn_timeout_default_and_zero() {
+        let config = KernelConfig::default();
+        assert_eq!(config.agent_turn_timeout_secs, 14_400);
+        // 0 means "no backstop" - clamp_bounds preserves it (does NOT restore
+        // the default), so operators can opt out of the wall-clock backstop.
+        let mut config = config;
+        config.agent_turn_timeout_secs = 0;
+        config.clamp_bounds();
+        assert_eq!(config.agent_turn_timeout_secs, 0);
+    }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = KernelConfig::default();
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        assert!(toml_str.contains("log_level"));
+    }
+
+    #[test]
+    fn test_kernel_mode_default() {
+        let mode = KernelMode::default();
+        assert_eq!(mode, KernelMode::Default);
+    }
+
+    #[test]
+    fn test_kernel_mode_serde() {
+        let stable = KernelMode::Stable;
+        let json = serde_json::to_string(&stable).unwrap();
+        assert_eq!(json, "\"stable\"");
+        let back: KernelMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, KernelMode::Stable);
+    }
+
+    #[test]
+    fn test_config_with_mode_and_language() {
+        let config = KernelConfig {
+            mode: KernelMode::Stable,
+            language: "ar".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.mode, KernelMode::Stable);
+        assert_eq!(config.language, "ar");
+    }
+
+    #[test]
+    fn test_clamp_bounds_zero_browser_timeout() {
+        let mut config = KernelConfig::default();
+        config.browser.timeout_secs = 0;
+        config.clamp_bounds();
+        assert_eq!(config.browser.timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_clamp_bounds_excessive_browser_sessions() {
+        let mut config = KernelConfig::default();
+        config.browser.max_sessions = 999;
+        config.clamp_bounds();
+        assert_eq!(config.browser.max_sessions, 100);
+    }
+
+    #[test]
+    fn test_clamp_bounds_zero_fetch_bytes() {
+        let mut config = KernelConfig::default();
+        config.web.fetch.max_response_bytes = 0;
+        config.clamp_bounds();
+        assert_eq!(config.web.fetch.max_response_bytes, 5_000_000);
+    }
+
+    #[test]
+    fn test_clamp_bounds_zero_fetch_timeout() {
+        let mut config = KernelConfig::default();
+        config.web.fetch.timeout_secs = 0;
+        config.clamp_bounds();
+        assert_eq!(config.web.fetch.timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_clamp_bounds_defaults_unchanged() {
+        let mut config = KernelConfig::default();
+        let browser_timeout = config.browser.timeout_secs;
+        let browser_sessions = config.browser.max_sessions;
+        let fetch_bytes = config.web.fetch.max_response_bytes;
+        let fetch_timeout = config.web.fetch.timeout_secs;
+        config.clamp_bounds();
+        assert_eq!(config.browser.timeout_secs, browser_timeout);
+        assert_eq!(config.browser.max_sessions, browser_sessions);
+        assert_eq!(config.web.fetch.max_response_bytes, fetch_bytes);
+        assert_eq!(config.web.fetch.timeout_secs, fetch_timeout);
+    }
+}

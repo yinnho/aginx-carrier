@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier"]
+members = ["crates/carrier", "crates/types"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,6 +28,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+# IDs
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+async-trait = "0.1"
+dirs = "6"
+# Security
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+# Testing
+rmp-serde = "1"
+
+# Internal crates
+carrier-types = { path = "crates/types" }
 
 [profile.release]
 lto = true
