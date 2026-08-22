@@ -52,11 +52,18 @@ pub fn run(clone: String) -> anyhow::Result<()> {
         .init();
 
     // Sniff the first stdin line to pick ACP-bridge vs one-shot-ask mode.
-    let mut stdin_lines = std::io::stdin().lock().lines();
-    let first = match stdin_lines.next() {
-        Some(Ok(l)) => l,
-        Some(Err(_)) | None => return Ok(()),
-    };
+    //
+    // NOTE: must NOT hold a `StdinLock` across the reader-thread spawn below —
+    // the lock guards the process-global stdin mutex, and `run()` stays alive
+    // inside `block_on` forever, so a leaked lock deadlocks the reader thread
+    // (first message works via `tx.send(first)`, everything after hangs).
+    // `Stdin::read_line` locks-and-releases per call and reads from the same
+    // global buffer, so no line is lost.
+    let mut first_raw = String::new();
+    if std::io::stdin().read_line(&mut first_raw)? == 0 {
+        return Ok(()); // EOF before any input
+    }
+    let first = first_raw.trim_end_matches(['\r', '\n']).to_string();
     let is_acp = first.trim().starts_with('{')
         && serde_json::from_str::<serde_json::Value>(first.trim())
             .map(|v| v.get("jsonrpc").is_some())
@@ -65,7 +72,11 @@ pub fn run(clone: String) -> anyhow::Result<()> {
     if !is_acp {
         // One-shot ask: remaining lines join the first as the message.
         let mut msg = first;
-        for l in stdin_lines.map_while(Result::ok) {
+        for l in std::io::stdin()
+            .lock()
+            .lines()
+            .map_while(Result::ok)
+        {
             msg.push('\n');
             msg.push_str(&l);
         }
