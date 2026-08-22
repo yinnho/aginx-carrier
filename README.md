@@ -14,16 +14,19 @@
 
 ## 状态
 
-Phase 0-5 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 + 剥多租户
+Phase 0-6 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 + 剥多租户
 + wechat-oa 剥离 + 数据目录 pivot `~/.aginx/carrier/` + clone_install 入网钩子 +
-`aginx-carrier acp` stdio 桥）。**agent:// 第一刀已闭环**：本地 aginx 网关按
-`~/.aginx/agents/<clone>/aginx.toml` 拉起本桥，端到端真实 LLM 对话实测通过。
+`aginx-carrier acp` stdio 桥 + iLink 通道与 `aginx-carrier start` 守护形态）。
+**agent:// 第一刀已闭环**：本地 aginx 网关按 `~/.aginx/agents/<clone>/aginx.toml`
+拉起本桥，端到端真实 LLM 对话实测通过。
 
-下一步：iLink 通道 → 三形态（桌面 Tauri / 移动 UniFFI / 服务器）。
+下一步：三形态（桌面 Tauri / 移动 UniFFI / 服务器）。
 
 ## 使用
 
 ```bash
 cargo build --workspace
 aginx-carrier info      # 版本 + 数据目录（~/.aginx/carrier/）
+aginx-carrier start     # 守护进程：kernel + iLink 通道 + cron（Ctrl-C 退出）
+aginx-carrier acp --clone <name>   # stdio ACP 桥（被 aginx 网关拉起）
 ```
