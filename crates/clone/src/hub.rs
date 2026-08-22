@@ -17,7 +17,7 @@ pub fn validate_hub_url(url: &str) -> Result<()> {
 
 // === Auth helpers ===
 
-/// Read API key from the configured env var. Falls back to reading ~/.opencarrier/.env directly.
+/// Read API key from the configured env var. Falls back to reading ~/.aginx/carrier/.env directly.
 pub fn read_api_key(env_var: &str) -> Result<String> {
     if let Ok(v) = std::env::var(env_var) {
         if !v.trim().is_empty() {

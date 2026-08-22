@@ -952,7 +952,7 @@ async fn tool_flow_load(
     ))?;
 
     // Only the clone's own workspace flows are loadable — system-shared flows
-    // (~/.opencarrier/flows/) are no longer scanned ("全进分身").
+    // (~/.aginx/carrier/flows/) are no longer scanned ("全进分身").
     let dirs = [root.join("flows")];
     for flows_dir in dirs {
         if let Some(path) = find_flow_path(&flows_dir, name).await {

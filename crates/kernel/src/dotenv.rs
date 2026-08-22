@@ -1,4 +1,4 @@
-//! Minimal `.env` file loader/saver for `~/.opencarrier/.env`.
+//! Minimal `.env` file loader/saver for `~/.aginx/carrier/.env`.
 //!
 //! No external crate needed — hand-rolled for simplicity.
 //! Format: `KEY=VALUE` lines, `#` comments, optional quotes.
@@ -14,12 +14,12 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Return the path to `~/.opencarrier/.env`.
+/// Return the path to `~/.aginx/carrier/.env`.
 pub fn env_file_path() -> Option<PathBuf> {
     Some(carrier_types::config::home_dir().join(".env"))
 }
 
-/// Load `~/.opencarrier/.env` and `~/.opencarrier/secrets.env` into the
+/// Load `~/.aginx/carrier/.env` and `~/.aginx/carrier/secrets.env` into the
 /// in-process override map.
 ///
 /// System env vars take priority — existing vars are NOT overridden.
@@ -35,7 +35,7 @@ pub fn load_dotenv() {
     load_env_file(secrets_env_path());
 }
 
-/// Return the path to `~/.opencarrier/secrets.env`.
+/// Return the path to `~/.aginx/carrier/secrets.env`.
 pub fn secrets_env_path() -> Option<PathBuf> {
     Some(carrier_types::config::home_dir().join("secrets.env"))
 }
@@ -65,7 +65,7 @@ fn load_env_file(path: Option<PathBuf>) {
     }
 }
 
-/// Upsert a key in `~/.opencarrier/.env`.
+/// Upsert a key in `~/.aginx/carrier/.env`.
 ///
 /// Creates the file if missing. Sets 0600 permissions on Unix.
 /// Also sets the key in the current process environment.

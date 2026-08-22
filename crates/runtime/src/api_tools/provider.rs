@@ -34,7 +34,7 @@ impl DeclarativeApiModule {
 
     fn resolve_auth(config: &ApiToolDef) -> Option<String> {
         if let Some(ref env_name) = config.auth_env {
-            // Use carrier_types::env::get_env (reads ENV_OVERRIDES from ~/.opencarrier/.env
+            // Use carrier_types::env::get_env (reads ENV_OVERRIDES from ~/.aginx/carrier/.env
             // first, then std::env) - std::env::var alone misses .env values.
             carrier_types::env::get_env(env_name).filter(|s| !s.is_empty())
         } else {

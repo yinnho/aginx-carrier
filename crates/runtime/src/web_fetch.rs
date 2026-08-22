@@ -25,7 +25,7 @@ const AGINXBROWSER_HOSTS: &[&str] = &[
 /// 读 AGINXBROWSER_URL。未设/空 → None（不启用外挂，纯 reqwest，行为等同改造前）。
 /// 在 fetch 调用时读取（非构造时），故环境变量可动态生效，且无需把字段塞进 WebFetchConfig。
 fn aginxbrowser_url() -> Option<String> {
-    // carrier_types::env::get_env so ~/.opencarrier/.env values take effect (load_dotenv
+    // carrier_types::env::get_env so ~/.aginx/carrier/.env values take effect (load_dotenv
     // populates ENV_OVERRIDES, not std::env). Falls back to std::env::var.
     carrier_types::env::get_env("AGINXBROWSER_URL").filter(|s| !s.is_empty())
 }

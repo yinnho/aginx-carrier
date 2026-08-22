@@ -66,7 +66,7 @@ pub struct WorkspaceContext {
     pub project_type: ProjectType,
     /// Whether this is a git repository.
     pub is_git_repo: bool,
-    /// Whether .opencarrier/ directory exists.
+    /// Whether an aginx-carrier workspace marker directory exists.
     pub has_carrier_dir: bool,
     /// Cached context files.
     cache: HashMap<String, CachedFile>,
@@ -77,7 +77,9 @@ impl WorkspaceContext {
     pub fn detect(root: &Path) -> Self {
         let project_type = detect_project_type(root);
         let is_git_repo = root.join(".git").exists();
-        let has_carrier_dir = root.join(".opencarrier").exists();
+        // `.aginx` is the current marker; `.opencarrier` read for clones
+        // migrated from opencarrier workspaces.
+        let has_carrier_dir = root.join(".aginx").exists() || root.join(".opencarrier").exists();
 
         let mut cache = HashMap::new();
         for &name in CONTEXT_FILES {
@@ -216,7 +218,7 @@ fn has_extension_in_dir(dir: &Path, ext: &str) -> bool {
     false
 }
 
-/// Persistent workspace state, saved to `.opencarrier/workspace-state.json`.
+/// Persistent workspace state, saved to `.aginx/workspace-state.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
     /// State format version.
@@ -233,20 +235,24 @@ fn default_version() -> u32 {
 }
 
 impl WorkspaceState {
-    /// Load state from the workspace's `.opencarrier/workspace-state.json`.
+    /// Load state from the workspace's `.aginx/workspace-state.json`.
     pub fn load(workspace_root: &Path) -> Self {
-        let path = workspace_root
-            .join(".opencarrier")
-            .join("workspace-state.json");
+        // `.aginx` is authoritative; fall back to a migrated `.opencarrier`
+        // state file so clones from opencarrier keep their workspace state.
+        let path = workspace_root.join(".aginx").join("workspace-state.json");
+        let path = std::fs::read_to_string(&path)
+            .err()
+            .map(|_| workspace_root.join(".opencarrier").join("workspace-state.json"))
+            .unwrap_or(workspace_root.join(".aginx").join("workspace-state.json"));
         match std::fs::read_to_string(&path) {
             Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
             Err(_) => Self::default(),
         }
     }
 
-    /// Save state to the workspace's `.opencarrier/workspace-state.json`.
+    /// Save state to the workspace's `.aginx/workspace-state.json`.
     pub fn save(&self, workspace_root: &Path) -> CarrierResult<()> {
-        let dir = workspace_root.join(".opencarrier");
+        let dir = workspace_root.join(".aginx");
         std::fs::create_dir_all(&dir).map_err(CarrierError::Io)?;
         let path = dir.join("workspace-state.json");
         let json = serde_json::to_string_pretty(self)

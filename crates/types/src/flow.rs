@@ -282,7 +282,7 @@ impl StepDef {
 }
 
 /// Privilege tier for a flow. `System` grants turn-scoped elevation only when
-/// the flow is loaded from the shared `~/.opencarrier/flows` directory (not a
+/// the flow is loaded from the shared `~/.aginx/carrier/flows` directory (not a
 /// private workspace overlay). See `docs/OFFICE-SYSTEM-FLOWS.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowPrivilege {
@@ -2019,8 +2019,8 @@ body"#;
         // absolute workspace path they discovered. Stripping workspace_root lets
         // the relative pattern match the absolute command at the same script.
         let patterns = vec!["python3 flows/art-director/*".to_string()];
-        let ws = std::path::Path::new("/home/u/.opencarrier/workspaces/demo");
-        let abs = "python3 /home/u/.opencarrier/workspaces/demo/flows/art-director/scripts/build.py --x 1";
+        let ws = std::path::Path::new("/home/u/.aginx/carrier/workspaces/demo");
+        let abs = "python3 /home/u/.aginx/carrier/workspaces/demo/flows/art-director/scripts/build.py --x 1";
         assert!(command_matches_flow_shell_allow(abs, &patterns, Some(ws)));
         // Same command without workspace_root insight must NOT match a relative
         // pattern (the original command_matches_shell_allow returns false here).
@@ -2121,7 +2121,7 @@ body"#;
         let cmd = "python3 ../../flows/outline-writer/scripts/validate_outline.py output/pipeline-x/大纲.md";
         assert!(command_matches_flow_shell_allow(cmd, &patterns, None));
         // Also works with workspace_root set (the collapse is independent).
-        let ws = std::path::Path::new("/home/u/.opencarrier/workspaces/ai-writer");
+        let ws = std::path::Path::new("/home/u/.aginx/carrier/workspaces/ai-writer");
         assert!(command_matches_flow_shell_allow(cmd, &patterns, Some(ws)));
 
         // Security: `..` traversal that escapes the pattern's directory must
@@ -2185,7 +2185,7 @@ body"#;
             None,
         ));
         // Same with workspace_root set (workspace-strip tier is also gated).
-        let ws = std::path::Path::new("/home/u/.opencarrier/workspaces/demo");
+        let ws = std::path::Path::new("/home/u/.aginx/carrier/workspaces/demo");
         assert!(!command_matches_flow_shell_allow(
             "python3 flows/foo/scripts/../../../etc/passwd",
             &patterns,

@@ -428,17 +428,17 @@ impl CarrierKernel {
         use carrier_types::config::KernelMode;
 
         // Env var overrides — useful for Docker where config.toml is baked in.
-        if let Ok(listen) = std::env::var("OPENCARRIER_LISTEN") {
+        if let Ok(listen) = std::env::var("AGINX_CARRIER_LISTEN") {
             config.api_listen = listen;
         }
 
-        // OPENCARRIER_API_KEY: env var sets the API authentication key when
+        // AGINX_CARRIER_API_KEY: env var sets the API authentication key when
         // config.toml doesn't already have one.  Config file takes precedence.
         if config.api_key.trim().is_empty() {
-            if let Ok(key) = std::env::var("OPENCARRIER_API_KEY") {
+            if let Ok(key) = std::env::var("AGINX_CARRIER_API_KEY") {
                 let key = key.trim().to_string();
                 if !key.is_empty() {
-                    info!("Using API key from OPENCARRIER_API_KEY environment variable");
+                    info!("Using API key from AGINX_CARRIER_API_KEY environment variable");
                     config.api_key = key;
                 }
             }
@@ -474,7 +474,7 @@ impl CarrierKernel {
             .memory
             .sqlite_path
             .clone()
-            .unwrap_or_else(|| config.data_dir.join("opencarrier.db"));
+            .unwrap_or_else(|| config.data_dir.join("carrier.db"));
         let memory = Arc::new(
             MemorySubstrate::open(&db_path)
                 .map_err(|e| KernelError::BootFailed(format!("Memory init failed: {e}")))?,

@@ -24,7 +24,7 @@ pub type RoutingModeFn = Arc<dyn Fn(&str, &str) -> RoutingMode + Send + Sync>;
 
 /// Where to push a notification of a given type.
 ///
-/// Configured in `~/.opencarrier/notify_routes.json`. The agent emits a
+/// Configured in `~/.aginx/carrier/notify_routes.json`. The agent emits a
 /// `[NOTIFY:type]content[/NOTIFY]` marker in its reply; the bridge looks up
 /// the type here and pushes via channel_send_fn.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

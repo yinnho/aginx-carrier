@@ -1,7 +1,7 @@
 //! Sender-based routing — dispatches inbound messages to agents by sender_id.
 //!
 //! Directory structure:
-//!   ~/.opencarrier/senders/{sender_id}/config.json   — routing + clone registry
+//!   ~/.aginx/carrier/senders/{sender_id}/config.json   — routing + clone registry
 //!
 //! config.json format:
 //!   {
@@ -60,7 +60,7 @@ pub struct SenderRouter {
     routes: DashMap<String, String>,
     /// In-memory cache: sender_id → { agent_name → CloneEntry }.
     clones: DashMap<String, HashMap<String, CloneEntry>>,
-    /// Root directory: ~/.opencarrier/senders/
+    /// Root directory: ~/.aginx/carrier/senders/
     senders_dir: PathBuf,
 }
 

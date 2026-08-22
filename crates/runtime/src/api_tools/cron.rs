@@ -127,7 +127,7 @@ fn build_cron_url(tool: &ApiToolDef) -> String {
         }
     }
     if let (Some(ref auth_env), Some(ref auth_param)) = (&tool.auth_env, &tool.auth_param) {
-        // carrier_types::env::get_env reads ~/.opencarrier/.env (ENV_OVERRIDES) first;
+        // carrier_types::env::get_env reads ~/.aginx/carrier/.env (ENV_OVERRIDES) first;
         // std::env::var alone misses .env-sourced keys.
         if let Some(key) = carrier_types::env::get_env(auth_env) {
             if !key.is_empty() {

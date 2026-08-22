@@ -255,7 +255,7 @@ pub trait KernelHandle: Send + Sync {
         ))
     }
 
-    /// Get the home directory path (~/.opencarrier/).
+    /// Get the home directory path (~/.aginx/carrier/).
     fn home_dir(&self) -> Option<std::path::PathBuf> {
         None
     }

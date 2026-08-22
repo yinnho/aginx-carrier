@@ -176,7 +176,7 @@ fn write_to_workspace_toml(
     Ok(())
 }
 
-/// Append a tool definition to the global api_tools.toml (~/.opencarrier/).
+/// Append a tool definition to the global api_tools.toml (~/.aginx/carrier/).
 fn write_to_global_toml(tool: &ApiToolDef) -> CarrierResult<()> {
     let home = carrier_types::config::home_dir();
     let toml_path = home.join("api_tools.toml");

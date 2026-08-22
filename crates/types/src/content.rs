@@ -22,7 +22,7 @@ use crate::error::{CarrierError, CarrierResult};
 pub struct MediaRef {
     /// Public URL the channel can fetch, or pass directly for URL-based media.
     pub url: Option<String>,
-    /// Local file path (absolute, or relative to `~/.opencarrier`).
+    /// Local file path (absolute, or relative to `~/.aginx/carrier`).
     pub file_path: Option<String>,
     /// Pre-uploaded platform media_id (only valid where it was issued).
     pub media_id: Option<String>,
@@ -258,7 +258,7 @@ pub struct DeliverableEntry {
 }
 
 /// Per-agent content registry, loaded from
-/// `~/.opencarrier/workspaces/{agent}/content.toml`.
+/// `~/.aginx/carrier/workspaces/{agent}/content.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContentConfig {

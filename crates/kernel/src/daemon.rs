@@ -1747,13 +1747,13 @@ mod tests {
         assert_ne!(name, id.to_string());
         // Profile path segment must match interactive bridge (agent name)
         let profile_via_name = carrier_types::config::sender_data_dir(
-            std::path::Path::new("/home/u/.opencarrier"),
+            std::path::Path::new("/home/u/.aginx/carrier"),
             "sender@im.wechat",
             &name,
             Some("sender@im.wechat"),
         );
         let profile_via_uuid = carrier_types::config::sender_data_dir(
-            std::path::Path::new("/home/u/.opencarrier"),
+            std::path::Path::new("/home/u/.aginx/carrier"),
             "sender@im.wechat",
             &id.to_string(),
             Some("sender@im.wechat"),

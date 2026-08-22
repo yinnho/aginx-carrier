@@ -129,7 +129,7 @@ pub fn resolve_sandbox_path(user_path: &str, workspace_root: &Path) -> CarrierRe
 ///
 /// Note: output/, memory/, and catch-all (non-internal) paths are handled by the
 /// filesystem tools directly via `resolve_user_data_path()`, which writes to the
-/// top-level `~/.opencarrier/senders/` directory. This sandbox function only
+/// top-level `~/.aginx/carrier/senders/` directory. This sandbox function only
 /// handles workspace-internal paths (knowledge/, flows/, etc.).
 pub fn resolve_sandbox_path_for_write(
     user_path: &str,

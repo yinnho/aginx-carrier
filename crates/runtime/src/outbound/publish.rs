@@ -75,7 +75,7 @@ pub fn process_publish_markers(
 /// 2. **Backend-bound OA (registered sender)** — the OA is bound in the backend
 ///    as a weixin-oa sender for auto-reply. That sender session already carries
 ///    `app_secret`, so the user shouldn't have to re-supply it just to publish.
-///    Falls back to `~/.opencarrier/senders/<app_id>/session.json`.
+///    Falls back to `~/.aginx/carrier/senders/<app_id>/session.json`.
 ///
 /// Returns None only if neither source has a non-empty app_secret for app_id.
 fn read_wechat_app_secret(

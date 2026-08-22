@@ -27,8 +27,6 @@ pub enum HotAction {
     ReloadBrowserConfig,
     /// Cron max jobs changed.
     UpdateCronConfig,
-    /// Webhook trigger config changed.
-    UpdateWebhookConfig,
     /// MCP server list changed — reconnect MCP clients.
     ReloadMcpServers,
     /// A2A config changed.
@@ -181,10 +179,6 @@ pub fn build_reload_plan(old: &KernelConfig, new: &KernelConfig) -> ReloadPlan {
 
     if old.max_cron_jobs != new.max_cron_jobs {
         plan.hot_actions.push(HotAction::UpdateCronConfig);
-    }
-
-    if field_changed(&old.webhook_triggers, &new.webhook_triggers) {
-        plan.hot_actions.push(HotAction::UpdateWebhookConfig);
     }
 
     if field_changed(&old.mcp_servers, &new.mcp_servers) {

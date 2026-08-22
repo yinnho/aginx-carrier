@@ -1,6 +1,6 @@
 //! Local MCP server installation registry.
 //!
-//! Manages `~/.opencarrier/mcp-servers/installed.json` and the per-server
+//! Manages `~/.aginx/carrier/mcp-servers/installed.json` and the per-server
 //! directory structure for installed MCP servers. Generates a single config
 //! snippet file that can be included from config.toml.
 
@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use carrier_types::mcp_manifest::{McpInstalledRecord, McpServerManifest};
 
-/// Base directory for MCP server data: `~/.opencarrier/mcp-servers/`.
+/// Base directory for MCP server data: `~/.aginx/carrier/mcp-servers/`.
 pub fn mcp_base_dir() -> PathBuf {
     carrier_types::config::home_dir().join("mcp-servers")
 }
 
-/// Config snippets directory: `~/.opencarrier/mcp-servers.d/`.
+/// Config snippets directory: `~/.aginx/carrier/mcp-servers.d/`.
 pub fn mcp_config_snippets_dir() -> PathBuf {
     carrier_types::config::home_dir().join("mcp-servers.d")
 }
@@ -66,7 +66,7 @@ pub fn is_installed(name: &str) -> bool {
 
 /// Install an MCP server from a manifest.
 ///
-/// 1. Creates `~/.opencarrier/mcp-servers/{name}/` directory
+/// 1. Creates `~/.aginx/carrier/mcp-servers/{name}/` directory
 /// 2. Copies the manifest as `mcp.json`
 /// 3. Regenerates the unified config snippet
 /// 4. Updates `installed.json`

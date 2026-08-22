@@ -165,7 +165,7 @@ pub enum CronAction {
     },
     /// Poll pending freepublish ids for an account and report terminal states
     /// to admins (no LLM). The pending list lives in the wechat-oa core
-    /// publish tracker (`~/.opencarrier/data/wechat_publish_pending.json`);
+    /// publish tracker (`~/.aginx/carrier/data/wechat_publish_pending.json`);
     /// the publish tool records each submitted publish_id there. The arm
     /// self-deletes this job after consecutive empty rounds — the daemon
     /// reconcile loop re-creates it when new publishes appear.
@@ -177,7 +177,7 @@ pub enum CronAction {
     },
     /// Pull NEW reader comments from every published article of an account
     /// and append them into the bound clone's knowledge (no LLM). The dedup
-    /// ledger (`~/.opencarrier/data/wechat_comment_seen.json`) keeps each run
+    /// ledger (`~/.aginx/carrier/data/wechat_comment_seen.json`) keeps each run
     /// incremental; new comments land in `knowledge/读者留言-YYYY-MM.md` of
     /// the account's `bind_agent` workspace, where the lifecycle knowledge
     /// compiler picks them up. A one-line digest goes to admins when anything

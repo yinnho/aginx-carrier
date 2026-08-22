@@ -165,35 +165,6 @@ impl Default for ReloadConfig {
     }
 }
 
-/// Webhook trigger authentication configuration.
-///
-/// Controls the `/hooks/wake` and `/hooks/agent` endpoints for external
-/// systems to trigger agent actions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WebhookTriggerConfig {
-    /// Enable webhook trigger endpoints. Default: false.
-    pub enabled: bool,
-    /// Env var name holding the bearer token (NOT the token itself).
-    /// MUST be set if enabled=true. Token must be >= 32 chars.
-    pub token_env: String,
-    /// Max payload size in bytes. Default: 65536.
-    pub max_payload_bytes: usize,
-    /// Rate limit: max requests per minute per IP. Default: 30.
-    pub rate_limit_per_minute: u32,
-}
-
-impl Default for WebhookTriggerConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            token_env: "OPENCARRIER_WEBHOOK_TOKEN".to_string(),
-            max_payload_bytes: 65536,
-            rate_limit_per_minute: 30,
-        }
-    }
-}
-
 /// Text-to-speech configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -281,7 +252,7 @@ impl Default for TtsElevenLabsConfig {
 pub struct VaultConfig {
     /// Whether the vault is enabled (auto-detected if vault.enc exists).
     pub enabled: bool,
-    /// Custom vault file path (default: ~/.opencarrier/vault.enc).
+    /// Custom vault file path (default: ~/.aginx/carrier/vault.enc).
     pub path: Option<PathBuf>,
 }
 
@@ -547,9 +518,9 @@ pub struct BudgetConfig {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KernelConfig {
-    /// Carrier home directory (default: ~/.opencarrier).
+    /// Carrier home directory (default: ~/.aginx/carrier).
     pub home_dir: PathBuf,
-    /// Data directory for databases (default: ~/.opencarrier/data).
+    /// Data directory for databases (default: ~/.aginx/carrier/data).
     pub data_dir: PathBuf,
     /// Log level (trace, debug, info, warn, error).
     pub log_level: String,
@@ -605,7 +576,7 @@ pub struct KernelConfig {
     /// Credential vault configuration.
     #[serde(default)]
     pub vault: VaultConfig,
-    /// Root directory for agent workspaces. Default: `~/.opencarrier/workspaces`
+    /// Root directory for agent workspaces. Default: `~/.aginx/carrier/workspaces`
     #[serde(default)]
     pub workspaces_dir: Option<PathBuf>,
     /// Hub (openclone-hub) connection settings.
@@ -620,9 +591,6 @@ pub struct KernelConfig {
     /// Config hot-reload settings.
     #[serde(default)]
     pub reload: ReloadConfig,
-    /// Webhook trigger configuration (external event injection).
-    #[serde(default)]
-    pub webhook_triggers: Option<WebhookTriggerConfig>,
     /// Budget configuration for cost/usage alerts.
     #[serde(default)]
     pub budget: BudgetConfig,
@@ -933,7 +901,6 @@ impl Default for KernelConfig {
             media: crate::media::MediaConfig::default(),
             links: crate::media::LinkConfig::default(),
             reload: ReloadConfig::default(),
-            webhook_triggers: None,
             budget: BudgetConfig::default(),
             max_cron_jobs: default_max_cron_jobs(),
             chain_resume_enabled: default_chain_resume_enabled(),
@@ -1016,10 +983,6 @@ impl std::fmt::Debug for KernelConfig {
             )
             .field("links", &format!("enabled={}", self.links.enabled))
             .field("reload", &self.reload.mode)
-            .field(
-                "webhook_triggers",
-                &self.webhook_triggers.as_ref().map(|w| w.enabled),
-            )
             .field("max_cron_jobs", &self.max_cron_jobs)
             .field("chain_resume_enabled", &self.chain_resume_enabled)
             .field("include", &format!("{} file(s)", self.include.len()))
@@ -1037,16 +1000,17 @@ impl std::fmt::Debug for KernelConfig {
     }
 }
 
-/// Resolve the OpenCarrier home directory.
+/// Resolve the aginx-carrier home directory.
 ///
-/// Priority: `OPENCARRIER_HOME` env var > `~/.opencarrier`.
+/// Priority: `AGINX_CARRIER_HOME` env var > `~/.aginx/carrier`.
 pub fn home_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("OPENCARRIER_HOME") {
+    if let Ok(home) = std::env::var("AGINX_CARRIER_HOME") {
         return PathBuf::from(home);
     }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
-        .join(".opencarrier")
+        .join(".aginx")
+        .join("carrier")
 }
 
 /// Resolve the per-sender-per-agent data directory under `workspaces/`.

@@ -9,10 +9,10 @@ use std::net::{IpAddr, ToSocketAddrs};
 use crate::error::{CarrierError, CarrierResult};
 
 /// Comma-separated hostnames that are allowed to resolve to private IPs.
-/// Set via the `OPENCARRIER_SSRF_ALLOWLIST` environment variable.
+/// Set via the `AGINX_CARRIER_SSRF_ALLOWLIST` environment variable.
 /// Example: `github.com,api.github.com`.
 fn ssrf_allowlist() -> Vec<String> {
-    std::env::var("OPENCARRIER_SSRF_ALLOWLIST")
+    std::env::var("AGINX_CARRIER_SSRF_ALLOWLIST")
         .unwrap_or_default()
         .split(',')
         .map(|s| s.trim().to_lowercase())

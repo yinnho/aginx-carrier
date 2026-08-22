@@ -155,6 +155,10 @@ pub async fn run_python_agent(
     cmd.env_clear();
 
     // Re-add ONLY safe, required vars
+    // New names + opencarrier legacy aliases (dual-write): flow scripts from
+    // the dup ecosystem may still read the old OPENCARRIER_* names.
+    cmd.env("AGINX_CARRIER_AGENT_ID", agent_id);
+    cmd.env("AGINX_CARRIER_MESSAGE", message);
     cmd.env("OPENCARRIER_AGENT_ID", agent_id);
     cmd.env("OPENCARRIER_MESSAGE", message);
 

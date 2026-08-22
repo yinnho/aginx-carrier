@@ -1,4 +1,4 @@
-//! Configuration loading from `~/.opencarrier/config.toml` with defaults.
+//! Configuration loading from `~/.aginx/carrier/config.toml` with defaults.
 //!
 //! Supports config includes: the `include` field specifies additional TOML files
 //! to load and deep-merge before the root config (root overrides includes).
@@ -254,7 +254,7 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
 
 /// Get the default config file path.
 ///
-/// Respects `OPENCARRIER_HOME` env var (e.g. `OPENCARRIER_HOME=/opt/carrier`).
+/// Respects `AGINX_CARRIER_HOME` env var (e.g. `AGINX_CARRIER_HOME=/opt/carrier`).
 pub fn default_config_path() -> PathBuf {
     carrier_home().join("config.toml")
 }

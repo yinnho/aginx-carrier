@@ -145,7 +145,7 @@ pub fn touch_user_profile(
     }
 }
 
-/// Read flow catalog from workspace/flows/ (private) AND ~/.opencarrier/flows/
+/// Read flow catalog from workspace/flows/ (private) AND ~/.aginx/carrier/flows/
 /// (shared system flows). Returns a short summary of all flows:
 /// "1. **{name}** — {description}". Private flows take precedence on name
 /// collisions with shared system flows.
@@ -560,7 +560,7 @@ fn flow_entry_is_false(content: &str) -> bool {
 /// (`flows/{name}/SKILL.md`) and flat format (`flows/{name}.md`).
 ///
 /// Used by both the LLM flow classifier and the flow catalog builder to scan
-/// private (`workspace/flows`) and shared system (`~/.opencarrier/flows`) dirs.
+/// private (`workspace/flows`) and shared system (`~/.aginx/carrier/flows`) dirs.
 fn collect_flow_summaries(flows_dir: &Path) -> Vec<(String, String, std::path::PathBuf)> {
     let mut out = Vec::new();
     if !flows_dir.is_dir() {
@@ -842,7 +842,7 @@ pub async fn classify_flow_with_llm(
 /// flow exists (e.g. it was deleted/renamed between suspend and resume).
 pub fn load_flow_by_name(workspace: &std::path::Path, flow_name: &str) -> Option<FlowMatch> {
     // Only the clone's own workspace flows are loadable — system-shared flows
-    // (~/.opencarrier/flows/) are no longer scanned ("全进分身").
+    // (~/.aginx/carrier/flows/) are no longer scanned ("全进分身").
     for dir in [workspace.join("flows")] {
         for (name, _description, path) in collect_flow_summaries(&dir) {
             if !name.eq_ignore_ascii_case(flow_name) {
