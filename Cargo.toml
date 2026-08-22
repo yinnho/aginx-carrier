@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/lifecycle", "crates/runtime"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/wechat-oa"]
 
 [workspace.package]
 version = "0.1.0"
@@ -31,6 +31,8 @@ clap = { version = "4", features = ["derive"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+sha1 = "0.10"
 # IDs
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 async-trait = "0.1"
@@ -74,6 +76,8 @@ libloading = "0.8"
 shlex = "1"
 
 carrier-runtime = { path = "crates/runtime" }
+carrier-kernel = { path = "crates/kernel" }
+carrier-wechat-oa = { path = "crates/wechat-oa" }
 
 [profile.release]
 lto = true

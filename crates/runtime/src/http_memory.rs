@@ -332,7 +332,7 @@ mod tests {
     ///
     /// Run: start the daemon, then
     ///   AGINXMEMORY_TEST_URL=http://127.0.0.1:4399 \
-    ///   cargo test -p runtime --features ... http_carrier_memory::tests::switch_on_round_trip
+    ///   cargo test -p runtime --features ... http_memory::tests::switch_on_round_trip
     #[tokio::test(flavor = "multi_thread")]
     async fn switch_on_round_trip() {
         let Some(url) = std::env::var("AGINXMEMORY_TEST_URL").ok() else {

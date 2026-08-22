@@ -1,0 +1,17 @@
+[package]
+name = "carrier-wechat-oa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared WeChat Official Account API core (client + token cache + session) for OpenCarrier"
+
+[dependencies]
+carrier-types = { path = "../types" }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+hex = { workspace = true }
