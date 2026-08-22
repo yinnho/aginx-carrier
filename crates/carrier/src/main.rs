@@ -4,6 +4,7 @@
 //! 定位与总纲见 aginx 生态 docs/AGINX-CARRIER-VISION.md。
 
 mod acp;
+mod start;
 
 use clap::{Parser, Subcommand};
 
@@ -36,9 +37,7 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Start => {
-            anyhow::bail!("start 尚未实现（Phase 7 三形态：服务器/桌面形态时落地）");
-        }
+        Command::Start => start::run()?,
         Command::Acp { clone } => acp::run(clone)?,
         Command::Info => {
             let data_dir = dirs::home_dir()

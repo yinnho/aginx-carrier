@@ -22,4 +22,7 @@ clap.workspace = true
 dirs = "6"
 carrier-kernel = { workspace = true }
 carrier-types = { workspace = true }
+carrier-runtime = { workspace = true }
+carrier-memory = { workspace = true }
+carrier-ilink = { workspace = true }
 uuid = { workspace = true }
