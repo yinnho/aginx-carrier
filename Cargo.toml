@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone"]
 
 [workspace.package]
 version = "0.1.0"
@@ -53,6 +53,14 @@ dashmap = "6"
 tempfile = "3"
 
 carrier-memory = { path = "crates/memory" }
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip", "deflate", "brotli", "blocking"] }
+base64 = "0.22"
+urlencoding = "2"
+flate2 = "1"
+tar = "0.4"
+
+carrier-clone = { path = "crates/clone" }
 
 [profile.release]
 lto = true
