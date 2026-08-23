@@ -27,11 +27,16 @@ const APP_JS: &str = include_str!("../assets/app.js");
 pub struct WebState {
     pub(crate) kernel: Arc<CarrierKernel>,
     pub(crate) listen_host: String,
+    /// 网关 agent 台账（第三刀）：added 清单 + per (agent,sender,cwd) 会话
+    pub(crate) tool_store: Arc<crate::tool_store::ToolStore>,
 }
 
 /// 起 Web UI 监听。bind 失败只报错不 panic。
 pub async fn serve(kernel: Arc<CarrierKernel>, listen: String) {
     let state = Arc::new(WebState {
+        tool_store: Arc::new(crate::tool_store::ToolStore::load(
+            kernel.config.home_dir.join("webui/external-tools.json"),
+        )),
         kernel,
         listen_host: listen
             .rsplit_once(':')
@@ -66,6 +71,10 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/market", get(crate::market::list))
         .route("/api/market/{name}/preview", get(crate::market::preview))
         .route("/api/market/{name}/install", post(crate::market::install))
+        // 接入本地工具（webui 第三刀）：网关 agent 列表 / 添加 / 移除
+        .route("/api/tools", get(tools_list))
+        .route("/api/tools/{id}/add", post(tools_add))
+        .route("/api/tools/{id}/remove", post(tools_remove))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             trust_middleware,
@@ -137,6 +146,8 @@ async fn list_agents(State(st): State<Arc<WebState>>) -> Response {
 struct ChatBody {
     message: String,
     sender_id: String,
+    /// 网关 agent（第三刀）可选工作目录；分身聊天忽略
+    cwd: Option<String>,
 }
 
 async fn chat(
@@ -144,8 +155,15 @@ async fn chat(
     AxumPath(agent): AxumPath<String>,
     Json(body): Json<ChatBody>,
 ) -> Response {
-    let Some(entry) = st.kernel.registry.find_by_name(&agent) else {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "unknown agent"}))).into_response();
+    // 分叉：本机分身注册表优先；未命中且在网关工具台账 → agent:// 路径
+    let entry = match st.kernel.registry.find_by_name(&agent) {
+        Some(e) => e,
+        None => {
+            if st.tool_store.is_added(&agent) {
+                return tool_chat(&st, &agent, body).await;
+            }
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "unknown agent"}))).into_response();
+        }
     };
     let agent_id = entry.id;
     let sender_id = format!("web:{}", body.sender_id);
@@ -213,6 +231,158 @@ fn sse_frame(v: serde_json::Value) -> Event {
     Event::default().data(v.to_string())
 }
 
+// ── 接入本地工具（webui 第三刀）：网关 agent 经 agent:// 协议路由 ──
+
+/// 网关 agent 现列：listAgents 透传 + 台账标记。网关/relay 不可达时
+/// 返回空列表 + gateway_error（前端显示网关状态条，联系人不受影响）。
+async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
+    let tools = match gateway_list_agents().await {
+        Ok(agents) => agents
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "id": a.id,
+                    "name": a.name,
+                    "description": a.description,
+                    "agent_type": a.agent_type,
+                    "kind": "gateway",
+                    "added": st.tool_store.is_added(&a.id),
+                })
+            })
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            return Json(serde_json::json!({
+                "tools": [],
+                "gateway_error": e,
+            }))
+            .into_response()
+        }
+    };
+    Json(serde_json::json!({ "tools": tools })).into_response()
+}
+
+async fn tools_add(
+    State(st): State<Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    st.tool_store.add(&id);
+    info!(agent = %id, "网关工具已添加");
+    StatusCode::CREATED.into_response()
+}
+
+async fn tools_remove(
+    State(st): State<Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    st.tool_store.remove(&id);
+    info!(agent = %id, "网关工具已移除");
+    StatusCode::CREATED.into_response()
+}
+
+async fn gateway_list_agents(
+) -> Result<Vec<crate::agent_client::GatewayAgent>, String> {
+    let ep = crate::agent_client::AgentEndpoint::from_gateway_config()
+        .ok_or_else(|| "本机网关未配置（~/.aginx/config.toml [relay] 段缺失）".to_string())?;
+    let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+    conn.initialize().await?;
+    conn.list_agents().await
+}
+
+/// 网关 agent 聊天：一次性 agent:// 连接，chunk → parse → SSE 帧，
+/// result 行收割 session_id 入台账（下轮 --resume 续接）。
+async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Response {
+    let Some(ep) = crate::agent_client::AgentEndpoint::from_gateway_config() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "本机网关未配置（~/.aginx/config.toml [relay] 段缺失）"})),
+        )
+            .into_response();
+    };
+    // cwd：显式传入优先，默认 ~/.aginx/carrier/external/<tool_id>（自动创建）。
+    // 校验交给网关（canonicalize + home 门，adapter/mod.rs 同款）。
+    let default_cwd = st.kernel.config.home_dir.join("external").join(tool_id);
+    let cwd = body
+        .cwd
+        .clone()
+        .unwrap_or_else(|| default_cwd.to_string_lossy().to_string());
+    if let Some(parent_err) = std::fs::create_dir_all(&default_cwd).err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("工作目录创建失败: {parent_err}")})),
+        )
+            .into_response();
+    }
+    let sender_id = format!("web:{}", body.sender_id);
+    let (resume_id, _) = st.tool_store.session(tool_id, &sender_id, &cwd);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
+    let tool_id = tool_id.to_string();
+    let message = body.message.clone();
+    let store = st.tool_store.clone();
+    tokio::spawn(async move {
+        let send = |v: serde_json::Value| {
+            let _ = tx.try_send(Ok(sse_frame(v)));
+        };
+        let outcome = async {
+            let mut conn = crate::agent_client::AgentConn::connect(&ep)
+                .await
+                .map_err(|e| format!("网关连接失败: {e}"))?;
+            conn.initialize().await?;
+            conn.prompt(
+                &tool_id,
+                &message,
+                Some(&cwd),
+                resume_id.as_deref(),
+                |item| match item {
+                    crate::agent_client::StreamItem::Delta(t) => {
+                        send(serde_json::json!({"type": "delta", "text": t}));
+                        true
+                    }
+                    crate::agent_client::StreamItem::Thinking(t) => {
+                        send(serde_json::json!({"type": "thinking", "text": t}));
+                        true
+                    }
+                    crate::agent_client::StreamItem::Tool(name) => {
+                        send(serde_json::json!({"type": "tool", "name": name, "preview": "", "is_error": false}));
+                        true
+                    }
+                    _ => true,
+                },
+            )
+            .await
+        }
+        .await;
+
+        match outcome {
+            Ok(result) => {
+                store.append_turn(
+                    &tool_id,
+                    &sender_id,
+                    &cwd,
+                    &message,
+                    &result.text,
+                    result.session_id.as_deref(),
+                );
+                send(serde_json::json!({
+                    "type": "done",
+                    "response": result.text,
+                    "iterations": 1,
+                    "tokens": result.num_turns.unwrap_or(0),
+                    "cost_usd": result.cost_usd,
+                    "duration_ms": result.duration_ms,
+                    "silent": false,
+                }));
+            }
+            Err(e) => send(serde_json::json!({"type": "error", "message": e})),
+        }
+    });
+
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|ev| (ev, rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+}
+
 fn kernel_self_handle(kernel: &Arc<CarrierKernel>) -> Arc<dyn carrier_runtime::kernel_handle::KernelHandle> {
     use carrier_runtime::kernel_handle::KernelHandle;
     kernel.clone() as Arc<dyn KernelHandle>
@@ -222,9 +392,33 @@ fn kernel_self_handle(kernel: &Arc<CarrierKernel>) -> Arc<dyn carrier_runtime::k
 struct HistoryQuery {
     agent: String,
     sender: String,
+    /// 网关 agent（第三刀）会话目录（换目录=新会话）
+    cwd: Option<String>,
 }
 
 async fn history(State(st): State<Arc<WebState>>, Query(q): Query<HistoryQuery>) -> Response {
+    // 分叉：本机分身优先；未命中且在网关工具台账 → store 读
+    if st.kernel.registry.find_by_name(&q.agent).is_none() {
+        if st.tool_store.is_added(&q.agent) {
+            let sender_id = format!("web:{}", q.sender);
+            let cwd = q.cwd.unwrap_or_else(|| {
+                st.kernel
+                    .config
+                    .home_dir
+                    .join("external")
+                    .join(&q.agent)
+                    .to_string_lossy()
+                    .to_string()
+            });
+            let (_, messages) = st.tool_store.session(&q.agent, &sender_id, &cwd);
+            let messages = messages
+                .into_iter()
+                .map(|(role, text)| serde_json::json!({"role": role, "text": text}))
+                .collect::<Vec<_>>();
+            return Json(serde_json::json!({ "messages": messages })).into_response();
+        }
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "unknown agent"}))).into_response();
+    }
     let Some(entry) = st.kernel.registry.find_by_name(&q.agent) else {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "unknown agent"}))).into_response();
     };
