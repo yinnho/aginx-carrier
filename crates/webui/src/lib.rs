@@ -6,6 +6,7 @@
 //! POST 仅 JSON），无 token——loopback 即信任边界。
 
 pub mod env_file;
+pub mod market;
 pub mod server;
 pub mod trust;
 

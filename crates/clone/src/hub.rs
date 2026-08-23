@@ -201,25 +201,16 @@ pub async fn search_templates(hub_url: &str, api_key: &str, query: &str) -> Resu
 }
 
 /// Search templates on Hub. Returns the raw JSON response.
+/// `page` is 1-based on the Hub side; `None` means page 1 (param omitted).
 pub async fn search_templates_json(
     hub_url: &str,
     api_key: &str,
     query: Option<&str>,
     limit: Option<u32>,
+    page: Option<u32>,
 ) -> Result<serde_json::Value> {
     validate_hub_url(hub_url)?;
-    let base = hub_url.trim_end_matches('/');
-    let limit = limit.unwrap_or(50);
-    let url = if let Some(q) = query {
-        format!(
-            "{}/api/templates?q={}&limit={}",
-            base,
-            urlencoding::encode(q),
-            limit
-        )
-    } else {
-        format!("{}/api/templates?limit={}", base, limit)
-    };
+    let url = search_url(hub_url, query, limit, page);
 
     let resp = hub_get(&url, api_key)
         .send()
@@ -231,6 +222,26 @@ pub async fn search_templates_json(
     }
 
     resp.json().await.context("解析 Hub 响应失败")
+}
+
+/// Pure URL builder for the Hub template listing (unit-testable).
+pub fn search_url(hub_url: &str, query: Option<&str>, limit: Option<u32>, page: Option<u32>) -> String {
+    let base = hub_url.trim_end_matches('/');
+    let mut params: Vec<String> = Vec::new();
+    if let Some(q) = query {
+        params.push(format!("q={}", urlencoding::encode(q)));
+    }
+    if let Some(l) = limit {
+        params.push(format!("limit={l}"));
+    }
+    if let Some(p) = page.filter(|p| *p > 1) {
+        params.push(format!("page={p}"));
+    }
+    if params.is_empty() {
+        format!("{}/api/templates", base)
+    } else {
+        format!("{}/api/templates?{}", base, params.join("&"))
+    }
 }
 
 /// Get a single template's detail from Hub.

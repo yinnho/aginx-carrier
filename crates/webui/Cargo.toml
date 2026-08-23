@@ -10,6 +10,7 @@ rust-version.workspace = true
 carrier-kernel = { workspace = true }
 carrier-types = { workspace = true }
 carrier-runtime = { workspace = true }
+carrier-clone = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }

@@ -189,3 +189,75 @@ body {
 .hint.ok { color: var(--green); }
 .hint.err { color: #c0392b; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* ---------- 装分身页（市场 + 权限预览） ---------- */
+#market-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #f6f7f9; overflow-y: auto; }
+#mkt-head { display: flex; align-items: center; gap: 16px; padding: 16px 24px; background: #fff; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+.mkt-title { font-size: 15px; font-weight: 600; white-space: nowrap; }
+#mkt-search { flex: 1; max-width: 320px; margin-left: auto; padding: 7px 12px; border: 1px solid #d0d3d8; border-radius: 4px; font-size: 13px; outline: none; }
+#mkt-search:focus { border-color: var(--green); }
+#mkt-key-banner {
+  background: #fff8e6; color: #8a6d3b; padding: 8px 24px; font-size: 13px;
+  border-bottom: 1px solid #f0e0b0;
+}
+#mkt-key-banner a { color: #576b95; cursor: pointer; }
+#mkt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding: 18px 24px; }
+.mkt-card {
+  background: #fff; border: 1px solid var(--line); border-radius: 6px;
+  padding: 14px 16px; cursor: pointer; display: flex; flex-direction: column; gap: 8px;
+}
+.mkt-card:hover { border-color: var(--green); box-shadow: 0 1px 6px rgba(0,0,0,.06); }
+.mkt-card-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mkt-card-desc { font-size: 12px; color: #777; line-height: 1.5; min-height: 36px; }
+.mkt-card-meta { font-size: 11px; color: #999; display: flex; gap: 6px; flex-wrap: wrap; }
+.mkt-card-id { font-family: ui-monospace, Menlo, monospace; }
+.mkt-card-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.mkt-chip {
+  font-size: 11px; color: #576b95; background: #eef1f6; border-radius: 3px; padding: 1px 6px;
+}
+.mkt-badge {
+  font-size: 11px; border: 1px solid #bbb; border-radius: 3px; padding: 0 5px; color: #777; font-weight: 400;
+}
+.mkt-badge.paid { color: #b26a00; border-color: #e3c391; background: #fdf6ea; }
+.mkt-badge.priv { color: #c0392b; border-color: #e5b3ad; background: #fdf0ee; }
+.mkt-badge.ok { color: var(--green); border-color: #a5dfc3; background: #eefaf2; }
+.mkt-loading { grid-column: 1 / -1; color: #9aa0a8; text-align: center; padding: 46px 0; font-size: 13px; }
+.mkt-loading.mkt-err { color: #c0392b; }
+#mkt-more-row { display: flex; justify-content: center; padding: 4px 0 26px; }
+
+/* 预览详情 */
+#mkt-detail { display: flex; flex-direction: column; min-height: 0; }
+#mkt-d-head { display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: #fff; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+#mkt-d-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 24px 0; font-size: 12px; color: #777; }
+#mkt-d-desc { padding: 8px 24px 0; font-size: 13px; color: #555; }
+.mkt-sec { padding: 18px 24px 8px; font-size: 13px; color: #333; }
+#mkt-flows { display: flex; flex-direction: column; gap: 10px; padding: 0 24px; }
+.mkt-flow { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+.mkt-flow-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.mkt-flow-tools { display: flex; gap: 4px; flex-wrap: wrap; }
+.mkt-flow-shell { display: flex; flex-direction: column; gap: 2px; }
+.mkt-flow-shell code, .mkt-flow code {
+  font: 11px/1.6 ui-monospace, Menlo, monospace; background: #f2f3f5; border-radius: 3px; padding: 0 5px; color: #444;
+}
+.mkt-dim { font-size: 12px; color: #999; }
+#mkt-ext { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 24px; }
+#mkt-warn { margin: 0 24px; background: #fdf0ee; border: 1px solid #e5b3ad; border-radius: 6px; padding: 10px 14px; font-size: 12px; color: #c0392b; }
+.mkt-note { margin: 14px 24px 0; font-size: 12px; color: #9aa0a8; }
+#mkt-d-foot {
+  display: flex; align-items: center; justify-content: flex-end; gap: 14px;
+  padding: 14px 24px 24px; margin-top: auto;
+}
+#mkt-install-status { font-size: 12px; color: #c0392b; }
+#mkt-install-btn:disabled { opacity: .45; cursor: default; }
+
+/* Hub key 弹窗 */
+#hubkey-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 400px; max-width: 92vw; }
+#hubkey-dialog::backdrop { background: rgba(0,0,0,.3); }
+#hubkey-dialog form { padding: 22px 24px; }
+#hubkey-dialog h3 { font-size: 16px; margin-bottom: 10px; }
+#hubkey-dialog label { display: block; font-size: 13px; color: #555; margin-bottom: 12px; }
+#hubkey-dialog input[type=password] {
+  display: block; width: 100%; margin-top: 4px; padding: 7px 10px;
+  border: 1px solid #d0d3d8; border-radius: 4px; font-size: 13px; outline: none;
+}
+#hubkey-dialog input:focus { border-color: var(--green); }

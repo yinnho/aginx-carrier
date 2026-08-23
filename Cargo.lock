@@ -630,6 +630,7 @@ name = "carrier-webui"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "carrier-clone",
  "carrier-kernel",
  "carrier-runtime",
  "carrier-types",

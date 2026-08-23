@@ -481,7 +481,7 @@ impl Default for ThinkingConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HubConfig {
-    /// Hub server URL. Default: "https://hub.aginx.net"
+    /// Hub server URL. Default: "https://duphub.com"（hub.aginx.net 已下线）
     pub url: String,
     /// Environment variable name holding the API key (e.g. "OPENCLONE_HUB_KEY").
     /// The API key is read from this env var at runtime.
@@ -491,7 +491,7 @@ pub struct HubConfig {
 impl Default for HubConfig {
     fn default() -> Self {
         Self {
-            url: "https://hub.aginx.net".to_string(),
+            url: "https://duphub.com".to_string(),
             api_key_env: "OPENCLONE_HUB_KEY".to_string(),
         }
     }

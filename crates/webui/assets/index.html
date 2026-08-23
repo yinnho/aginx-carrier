@@ -11,6 +11,7 @@
     <div id="side-head">
       <span id="brand-mark">aginx</span>
       <div id="side-actions">
+        <button id="market-btn" class="icon-btn" title="装分身（市场）">＋</button>
         <button id="refresh-btn" class="icon-btn" title="刷新">⟳</button>
         <button id="settings-btn" class="icon-btn" title="设置">⚙</button>
       </div>
@@ -50,6 +51,33 @@
       </footer>
     </div>
   </main>
+
+  <main id="market-pane" class="hidden">
+    <div id="mkt-list">
+      <header id="mkt-head">
+        <div class="mkt-title">装分身 · DupHub 市场</div>
+        <input id="mkt-search" type="text" placeholder="搜索市场分身" autocomplete="off">
+      </header>
+      <div id="mkt-key-banner" class="hidden"></div>
+      <div id="mkt-grid"></div>
+      <div id="mkt-more-row"><button id="mkt-more-btn" class="btn-ghost hidden">加载更多</button></div>
+    </div>
+
+    <div id="mkt-detail" class="hidden"></div>
+  </main>
+
+  <dialog id="hubkey-dialog">
+    <form onsubmit="return false">
+      <h3>DupHub API Key</h3>
+      <p class="hint" id="hubkey-tip">安装/预览分身需要 DupHub API key（在 duphub.com 获取）。key 写入本机 .env，只存本地。</p>
+      <label>Key（<span id="hubkey-env-name">OPENCLONE_HUB_KEY</span>）<input id="hubkey-value" type="password" placeholder="hub_sk-…"></label>
+      <div class="hint" id="hubkey-hint"></div>
+      <div class="dialog-actions">
+        <button type="button" id="hubkey-cancel" class="btn-ghost">取消</button>
+        <button type="button" id="hubkey-save" class="btn-primary">保存</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="settings-dialog">
     <form onsubmit="return false">

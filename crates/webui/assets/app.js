@@ -9,6 +9,9 @@ const state = {
   history: new Map(), // agent name -> [{role:'user'|'agent', text}]
   streaming: false,
   brain: null,
+  view: 'chat', // 'chat' | 'market' | 'detail'
+  market: { q: '', page: 1, templates: [], hasMore: false, keyOk: true, hubEnv: '', hubUrl: '' },
+  installing: false,
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -336,6 +339,243 @@ async function saveSettings() {
   }
 }
 
+// ---------- 装分身页（市场 / 权限预览 / 一键安装） ----------
+
+function showView(v) {
+  state.view = v;
+  const inMarket = v === 'market' || v === 'detail';
+  $('chat-pane').classList.toggle('hidden', inMarket);
+  $('market-pane').classList.toggle('hidden', !inMarket);
+  $('mkt-list').classList.toggle('hidden', v !== 'market');
+  $('mkt-detail').classList.toggle('hidden', v !== 'detail');
+}
+
+async function loadMarket(reset) {
+  const m = state.market;
+  if (reset) { m.page = 1; m.templates = []; }
+  m.q = ($('mkt-search').value || '').trim();
+  $('mkt-grid').innerHTML = '<div class="mkt-loading">加载中…</div>';
+  try {
+    const data = await apiGet(
+      `/api/market?q=${encodeURIComponent(m.q)}&page=${m.page}`
+    );
+    m.templates = m.page === 1 ? data.templates || [] : m.templates.concat(data.templates || []);
+    m.hasMore = !!data.has_more;
+    m.keyOk = !!data.key_configured;
+    m.hubEnv = data.api_key_env || 'OPENCLONE_HUB_KEY';
+    m.hubUrl = data.hub_url || '';
+    $('mkt-key-banner').classList.toggle('hidden', m.keyOk);
+    $('mkt-key-banner').innerHTML = m.keyOk
+      ? ''
+      : `未配置 DupHub API key——列表可浏览，<a id="mkt-key-link" href="#">点此填写 key</a> 后才能预览与安装`;
+    const link = $('mkt-key-link');
+    if (link) link.onclick = openHubKey;
+    renderMarket();
+  } catch (e) {
+    $('mkt-grid').innerHTML = `<div class="mkt-loading mkt-err">市场加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function fmtSize(n) {
+  if (!n || n <= 0) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderMarket() {
+  const grid = $('mkt-grid');
+  grid.innerHTML = '';
+  if (!state.market.templates.length) {
+    grid.innerHTML = '<div class="mkt-loading">市场里没有匹配的分身</div>';
+  }
+  for (const t of state.market.templates) {
+    const name = t.name || '';
+    const card = document.createElement('div');
+    card.className = 'mkt-card';
+    const badges = [];
+    if (t.price > 0) badges.push(`<span class="mkt-badge paid">付费</span>`);
+    if (t.visibility === 'private') badges.push(`<span class="mkt-badge priv">私有</span>`);
+    const tags = (t.tags || []).slice(0, 4)
+      .map((x) => `<span class="mkt-chip">${escapeHtml(String(x))}</span>`).join('');
+    card.innerHTML =
+      `<div class="mkt-card-name">${escapeHtml(t.display_name || name)}${badges.join('')}</div>` +
+      `<div class="mkt-card-desc">${escapeHtml((t.description || '').slice(0, 90) || '（无描述）')}</div>` +
+      `<div class="mkt-card-meta"><span class="mkt-card-id">${escapeHtml(name)}</span>` +
+      `${t.author ? `<span>· ${escapeHtml(String(t.author))}</span>` : ''}` +
+      `${t.download_count != null ? `<span>· ${escapeHtml(String(t.download_count))} 次安装</span>` : ''}</div>` +
+      (tags ? `<div class="mkt-card-tags">${tags}</div>` : '');
+    card.onclick = () => openMarketDetail(name);
+    grid.appendChild(card);
+  }
+  $('mkt-more-btn').classList.toggle('hidden', !state.market.hasMore);
+}
+
+async function openMarketDetail(name) {
+  showView('detail');
+  const box = $('mkt-detail');
+  box.innerHTML = '<div class="mkt-loading">拉取权限清单…</div>';
+  let d;
+  try {
+    d = await apiGet(`/api/market/${encodeURIComponent(name)}/preview`);
+  } catch (e) {
+    box.innerHTML =
+      `<header id="mkt-d-head"><button id="mkt-back" class="btn-ghost">← 返回市场</button></header>` +
+      `<div class="mkt-loading mkt-err">拉取失败：${escapeHtml(e.message)}</div>`;
+    $('mkt-back').onclick = () => { showView('market'); };
+    return;
+  }
+  renderMarketDetail(d);
+}
+
+// 工具徽章按 max_level 着色：readonly 蓝 / write 橙 / execute 红 / dangerous 深红
+const LEVEL_COLOR = {
+  none: '#8a8f99', readonly: '#576b95', write: '#b26a00',
+  execute: '#c0392b', dangerous: '#8e1b1b',
+};
+
+function levelChip(level) {
+  const c = LEVEL_COLOR[level] || LEVEL_COLOR.none;
+  return `<span class="mkt-badge" style="color:${c};border-color:${c}">${escapeHtml(level)}</span>`;
+}
+
+function renderMarketDetail(d) {
+  const box = $('mkt-detail');
+  const flows = d.flows || [];
+  const errs = d.format_errors || [];
+  const blocks = [];
+
+  blocks.push(`<header id="mkt-d-head">
+    <button id="mkt-back" class="btn-ghost">← 返回市场</button>
+    <div class="mkt-title">${escapeHtml(d.display_name || d.name)} <span class="mkt-card-id">${escapeHtml(d.name)}</span></div>
+  </header>`);
+
+  const badges = [];
+  if (d.price > 0) badges.push(`<span class="mkt-badge paid">付费${d.purchased ? '·已购' : ''}</span>`);
+  if (d.visibility === 'private') badges.push(`<span class="mkt-badge priv">私有</span>`);
+  if (d.installed) badges.push(`<span class="mkt-badge ok">已安装</span>`);
+  if (d.name_valid === false) badges.push(`<span class="mkt-badge priv">名字不合法·装不了</span>`);
+  blocks.push(
+    `<div id="mkt-d-meta">
+      ${badges.join('')}
+      <span>版本 ${escapeHtml(String(d.latest_version || '?'))}</span>
+      <span>${d.file_count} 个文件</span>
+      <span>${fmtSize(d.total_bytes)}</span>
+      ${d.author ? `<span>作者 ${escapeHtml(String(d.author))}</span>` : ''}
+      ${(d.tags || []).map((x) => `<span class="mkt-chip">${escapeHtml(String(x))}</span>`).join('')}
+    </div>`
+  );
+  if (d.description) blocks.push(`<div id="mkt-d-desc">${escapeHtml(d.description)}</div>`);
+
+  // 权限清单：每 flow 一张小卡
+  if (flows.length) {
+    const cards = flows.map((f) => {
+      const tools = (f.tools || [])
+        .map((t) => `<span class="mkt-badge tool" style="color:${LEVEL_COLOR[f.max_level] || LEVEL_COLOR.none}">${escapeHtml(t)}</span>`)
+        .join('') || '<span class="mkt-dim">无工具</span>';
+      const shell = (f.shell_allow || []).length
+        ? `<div class="mkt-flow-shell"><div class="mkt-dim">shell 放行：</div>${f.shell_allow.map((s) => `<code>${escapeHtml(s)}</code>`).join('')}</div>`
+        : '';
+      const deny = (f.deny_tools || []).length
+        ? `<div class="mkt-dim">禁用：${f.deny_tools.map((s) => `<code>${escapeHtml(s)}</code>`).join(' ')}</div>`
+        : '';
+      const marks = [
+        f.privilege === 'system' ? '<span class="mkt-badge priv">system 特权</span>' : '',
+        f.elevates ? '<span class="mkt-badge paid">shell 提权</span>' : '',
+        f.entry === false ? '<span class="mkt-dim">非入口</span>' : '<span class="mkt-badge ok">入口</span>',
+      ].join('');
+      return `<div class="mkt-flow">
+        <div class="mkt-flow-head"><b>${escapeHtml(f.name)}</b>${marks}${levelChip(f.max_level)}</div>
+        <div class="mkt-dim">${escapeHtml((f.description || '').slice(0, 100) || '（无描述）')}</div>
+        <div class="mkt-flow-tools">${tools}</div>
+        ${shell}${deny}
+      </div>`;
+    }).join('');
+    blocks.push(`<h4 class="mkt-sec">权限清单（${flows.length} 个 flow）</h4><div id="mkt-flows">${cards}</div>`);
+  } else {
+    blocks.push(`<h4 class="mkt-sec">权限清单</h4><div class="mkt-dim">这个分身没有声明任何 flow。</div>`);
+  }
+
+  if ((d.mcp_servers || []).length || (d.plugins || []).length) {
+    blocks.push(
+      `<h4 class="mkt-sec">外部连接</h4><div id="mkt-ext">` +
+      (d.mcp_servers || []).map((s) => `<span class="mkt-chip">MCP · ${escapeHtml(s)}</span>`).join('') +
+      (d.plugins || []).map((s) => `<span class="mkt-chip">插件 · ${escapeHtml(s)}</span>`).join('') +
+      `</div>`
+    );
+  }
+
+  if (errs.length) {
+    blocks.push(
+      `<h4 class="mkt-sec">格式校验不通过</h4><div id="mkt-warn">${errs.map((e) => `<div>⚠ ${escapeHtml(e)}</div>`).join('')}</div>`
+    );
+  }
+  blocks.push(`<div class="mkt-note">安装后会自动附加 self-growth flow 与格式规范文件——实际内容会比上面多这两样，非 bug。</div>`);
+
+  // 底栏：安装钮
+  const blocked = errs.length > 0 || d.name_valid === false || (d.price > 0 && !d.purchased);
+  const btnText = blocked
+    ? (errs.length || d.name_valid === false ? '格式校验不通过，暂不可安装' : '需先在 DupHub 购买')
+    : d.installed ? '重装（覆盖现有分身）' : '安装到本机';
+  blocks.push(
+    `<footer id="mkt-d-foot"><span id="mkt-install-status"></span>
+      <button id="mkt-install-btn" class="btn-primary"${blocked || state.installing ? ' disabled' : ''}>${btnText}</button>
+    </footer>`
+  );
+
+  box.innerHTML = blocks.join('');
+  $('mkt-back').onclick = () => { showView('market'); };
+  $('mkt-install-btn').onclick = () => installClone(d.name);
+}
+
+async function installClone(name) {
+  const btn = $('mkt-install-btn');
+  const status = $('mkt-install-status');
+  state.installing = true;
+  btn.disabled = true;
+  btn.textContent = '拉取并安装中…';
+  status.textContent = '';
+  try {
+    const r = await apiSend(`/api/market/${encodeURIComponent(name)}/install`, 'POST', {});
+    status.textContent = '已安装，正在启动…';
+    await loadAgents();
+    const entry = state.agents.find((a) => a.name === r.name || a.name === name);
+    showView('chat');
+    if (entry) await selectAgent(entry);
+  } catch (e) {
+    status.textContent = `安装失败：${e.message}`;
+    btn.disabled = false;
+    btn.textContent = '重试安装';
+  }
+  state.installing = false;
+}
+
+function openHubKey() {
+  $('hubkey-env-name').textContent = state.market.hubEnv || 'OPENCLONE_HUB_KEY';
+  $('hubkey-value').value = '';
+  const h = $('hubkey-hint');
+  h.textContent = '';
+  h.className = 'hint';
+  $('hubkey-dialog').showModal();
+}
+
+async function saveHubKey() {
+  const env = state.market.hubEnv || 'OPENCLONE_HUB_KEY';
+  const value = $('hubkey-value').value.trim();
+  const h = $('hubkey-hint');
+  if (!value) { h.textContent = 'key 不能为空'; h.className = 'hint err'; return; }
+  h.textContent = '保存中…';
+  try {
+    await apiSend('/api/key', 'POST', { name: env, value });
+    h.textContent = '已保存';
+    h.className = 'hint ok';
+    setTimeout(() => { $('hubkey-dialog').close(); loadMarket(true); }, 400);
+  } catch (e) {
+    h.textContent = `保存失败：${e.message}`;
+    h.className = 'hint err';
+  }
+}
+
 // ---------- 事件接线 + 启动 ----------
 
 function wireEvents() {
@@ -350,6 +590,23 @@ function wireEvents() {
   $('settings-btn').onclick = openSettings;
   $('banner').onclick = openSettings;
   $('search-input').addEventListener('input', renderContacts);
+
+  // 装分身页
+  $('market-btn').onclick = () => {
+    showView('market');
+    if (!state.market.templates.length) loadMarket(true);
+  };
+  let mktSearchTimer = null;
+  $('mkt-search').addEventListener('input', () => {
+    clearTimeout(mktSearchTimer);
+    mktSearchTimer = setTimeout(() => loadMarket(true), 350);
+  });
+  $('mkt-more-btn').onclick = () => {
+    state.market.page += 1;
+    loadMarket(false);
+  };
+  $('hubkey-save').onclick = saveHubKey;
+  $('hubkey-cancel').onclick = () => $('hubkey-dialog').close();
   $('settings-save').onclick = saveSettings;
   $('settings-cancel').onclick = () => $('settings-dialog').close();
   $('mod-add-btn').onclick = () => {

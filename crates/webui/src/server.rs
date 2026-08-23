@@ -25,8 +25,8 @@ const STYLE_CSS: &str = include_str!("../assets/style.css");
 const APP_JS: &str = include_str!("../assets/app.js");
 
 pub struct WebState {
-    kernel: Arc<CarrierKernel>,
-    listen_host: String,
+    pub(crate) kernel: Arc<CarrierKernel>,
+    pub(crate) listen_host: String,
 }
 
 /// 起 Web UI 监听。bind 失败只报错不 panic。
@@ -62,6 +62,10 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/history", get(history))
         .route("/api/brain", get(get_brain).put(put_brain))
         .route("/api/key", post(post_key))
+        // 装分身页（webui 第二刀）：DupHub 市场列表 / 权限预览 / 一键安装
+        .route("/api/market", get(crate::market::list))
+        .route("/api/market/{name}/preview", get(crate::market::preview))
+        .route("/api/market/{name}/install", post(crate::market::install))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             trust_middleware,
