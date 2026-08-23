@@ -427,6 +427,11 @@ impl CarrierKernel {
     pub fn boot_with_config(mut config: KernelConfig) -> KernelResult<Self> {
         use carrier_types::config::KernelMode;
 
+        // `~/.aginx/carrier/.env`（+ secrets.env）进进程内覆盖表——所有形态
+        // （start 守护 / acp 桥 / 桌面）都经这里 boot，LLM key 等一次到位。
+        // 系统环境变量优先，不覆盖。
+        crate::dotenv::load_dotenv();
+
         // Env var overrides — useful for Docker where config.toml is baked in.
         if let Ok(listen) = std::env::var("AGINX_CARRIER_LISTEN") {
             config.api_listen = listen;

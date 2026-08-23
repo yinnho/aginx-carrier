@@ -155,7 +155,7 @@ pub async fn boot_channels(kernel: &Arc<CarrierKernel>) -> anyhow::Result<Channe
 }
 
 /// Boot-time aginx 入网对账：kernel 里已装但 `~/.aginx/agents/` 缺登记的
-/// 分身补写 aginx.toml。clone_install 是增��钩子；这里是启动兜底，覆盖
+/// 分身补写 aginx.toml。clone_install 是增量钩子；这里是启动兜底，覆盖
 /// 手工导入/拷贝 workspace、aginx.toml 丢失等情况。
 ///
 /// 已存在的登记**不覆盖**——保留手工编辑；只有缺失才补。
@@ -172,6 +172,33 @@ pub fn sync_aginx_registrations(kernel: &Arc<CarrierKernel>) {
         ) {
             Ok(()) => tracing::info!(agent = %entry.name, "aginx registration reconciled"),
             Err(e) => tracing::warn!(agent = %entry.name, error = %e, "aginx registration failed"),
+        }
+    }
+}
+
+/// 系统分身种子：未注册 clone-creator（克隆大师）时，用内嵌定义层走正规
+/// 安装管线装上。此后所有分身由它生成——分身不手工摆文件。
+///
+/// 已注册即跳过（升级定义层走 dup 管线或 REINSTALL，boot 不覆盖）。
+/// 失败只告警不挡启动：裸系统（无克隆大师）仍可跑，修复后重启补种。
+pub async fn seed_system_creator(kernel: &Arc<CarrierKernel>) {
+    if kernel
+        .registry
+        .find_by_name(carrier_clone::system_creator::SYSTEM_CREATOR_NAME)
+        .is_some()
+    {
+        return;
+    }
+    let files = carrier_clone::system_creator::system_creator_files();
+    match kernel
+        .clone_install_files(carrier_clone::system_creator::SYSTEM_CREATOR_NAME, files)
+        .await
+    {
+        Ok((id, name, display_name)) => {
+            tracing::info!(id = %id, name = %name, display_name = %display_name, "系统分身已种子：clone-creator");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "clone-creator 种子失败（不影响启动，重启重试）");
         }
     }
 }

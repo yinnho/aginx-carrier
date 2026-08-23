@@ -194,7 +194,12 @@ fn boot_and_register(state: &BridgeState) -> Result<String, String> {
     let mut guard = state.kernel.lock().unwrap();
     if guard.is_none() {
         let kernel = CarrierKernel::boot(None).map_err(|e| format!("kernel boot failed: {e}"))?;
-        *guard = Some(Arc::new(kernel));
+        let kernel = Arc::new(kernel);
+        // 桥内 kernel 也要挂 self_handle：session/prompt 的轮次要能调跨 agent
+        // 工具（clone_install/cron_create…），否则 "Kernel handle not available"
+        // 连环失败（run_ask 一直有，这条路径漏了）。
+        kernel.set_self_handle();
+        *guard = Some(kernel);
     }
     let kernel = Arc::clone(guard.as_ref().unwrap());
     drop(guard);
@@ -314,10 +319,12 @@ async fn handle_prompt(
     // Each ACP session runs in its own kernel session (`acp:<id>` label —
     // session isolation refuses unlabeled turns). channel_type keeps the
     // channel-side paths happy without claiming a real channel.
+    // kernel_handle 传 self——跨 agent 工具（clone_install 等）依赖它。
+    let kh: Arc<dyn carrier_runtime::kernel_handle::KernelHandle> = kernel.clone();
     let turn = kernel.send_message_with_handle(
         session.agent_id,
         &text,
-        None,
+        Some(kh),
         Some(format!("acp:{sid}")),
         Some("aginx".to_string()),
         None,
@@ -382,7 +389,7 @@ async fn handle_borrowed_prompt(
             agent_id,
             ticket,
             &text,
-            None,
+            Some(Arc::clone(&kernel) as Arc<dyn carrier_runtime::kernel_handle::KernelHandle>),
             active_flow.as_deref(),
             &materials,
             None,

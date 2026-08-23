@@ -24,6 +24,10 @@ pub fn run() -> anyhow::Result<()> {
 async fn async_main() -> anyhow::Result<()> {
     let kernel = aginx_carrier::wiring::boot_kernel()?;
 
+    // ── 系统分身：clone-creator（克隆大师）未注册则用内嵌定义层装上。
+    // 分身只经它生成，不手工摆文件。──
+    aginx_carrier::wiring::seed_system_creator(&kernel).await;
+
     // ── aginx 入网同步：workspace 里已装但 ~/.aginx/agents/ 缺登记的分身
     // 补写 aginx.toml（clone_install 是增量钩子，这里是启动对账）。──
     aginx_carrier::wiring::sync_aginx_registrations(&kernel);

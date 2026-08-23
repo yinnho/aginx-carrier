@@ -8,6 +8,7 @@ pub mod hub;
 mod loader;
 pub mod manifest;
 pub mod manifest_builder;
+pub mod system_creator;
 
 pub use defaults::{CLONE_FORMAT_SPEC, CLONE_FORMAT_SPEC_VERSION, DEFAULT_SELF_GROWTH_FLOW};
 

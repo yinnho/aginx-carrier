@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 dirs = "6"
 carrier-kernel = { workspace = true }
+carrier-clone = { workspace = true }
 base64 = { workspace = true }
 carrier-types = { workspace = true }
 carrier-runtime = { workspace = true }
