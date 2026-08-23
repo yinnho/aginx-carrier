@@ -1,267 +1,80 @@
-<!DOCTYPE html>
-<html lang="zh">
+<!doctype html>
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>aginx-carrier</title>
-<script defer src="/assets/alpine.min.js"></script>
-<style>
-:root { --bg:#0f1115; --card:#181b22; --line:#262a33; --fg:#e6e8ee; --dim:#8b90a0; --accent:#6c8cff; --err:#ff6c6c; }
-* { box-sizing:border-box; margin:0; padding:0; }
-body { background:var(--bg); color:var(--fg); font-family:-apple-system,"PingFang SC",sans-serif; height:100vh; display:flex; flex-direction:column; }
-nav { display:flex; gap:4px; padding:10px 14px; border-bottom:1px solid var(--line); align-items:center; }
-nav h1 { font-size:15px; margin-right:auto; color:var(--dim); font-weight:600; }
-nav button { background:none; border:none; color:var(--dim); padding:7px 14px; border-radius:8px; cursor:pointer; font-size:14px; }
-nav button.active { background:var(--card); color:var(--fg); }
-main { flex:1; overflow:hidden; }
-.banner { background:#3a2f12; color:#ffd66c; padding:8px 14px; font-size:13px; cursor:pointer; }
-.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; padding:16px; overflow-y:auto; height:100%; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; cursor:pointer; transition:border-color .15s; }
-.card:hover { border-color:var(--accent); }
-.card .emoji { font-size:28px; }
-.card h3 { margin:8px 0 4px; font-size:15px; }
-.card p { color:var(--dim); font-size:12px; line-height:1.5; max-height:54px; overflow:hidden; }
-.badge { display:inline-block; font-size:11px; color:var(--dim); border:1px solid var(--line); padding:1px 8px; border-radius:99px; margin-top:8px; }
-.chat { display:flex; flex-direction:column; height:100%; max-width:820px; margin:0 auto; }
-.msgs { flex:1; overflow-y:auto; padding:18px 14px; display:flex; flex-direction:column; gap:12px; }
-.msg { max-width:78%; padding:10px 14px; border-radius:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; font-size:14px; }
-.msg.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
-.msg.assistant { align-self:flex-start; background:var(--card); border:1px solid var(--line); border-bottom-left-radius:4px; }
-.think { align-self:flex-start; color:var(--dim); font-size:12px; max-width:78%; cursor:pointer; }
-.think details summary { list-style:none; }
-.toolrow { align-self:center; color:var(--dim); font-size:11px; font-family:monospace; background:var(--card); padding:3px 10px; border-radius:6px; max-width:90%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.composer { display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--line); }
-.composer textarea { flex:1; background:var(--card); border:1px solid var(--line); color:var(--fg); border-radius:10px; padding:10px 12px; resize:none; height:44px; font-size:14px; outline:none; font-family:inherit; }
-.composer textarea:focus { border-color:var(--accent); }
-.composer button { background:var(--accent); border:none; color:#fff; border-radius:10px; padding:0 20px; cursor:pointer; font-size:14px; }
-.composer button:disabled { opacity:.4; cursor:default; }
-.settings { max-width:640px; margin:0 auto; padding:24px 16px; width:100%; overflow-y:auto; height:100%; }
-.settings label { display:block; font-size:13px; color:var(--dim); margin:16px 0 6px; }
-.settings input { width:100%; background:var(--card); border:1px solid var(--line); color:var(--fg); border-radius:8px; padding:9px 12px; font-size:14px; outline:none; }
-.settings input:focus { border-color:var(--accent); }
-.modrow { display:flex; gap:8px; margin-top:8px; }
-.modrow input { flex:1; }
-.modrow .del { width:auto; background:none; border:1px solid var(--line); color:var(--err); border-radius:8px; padding:0 12px; cursor:pointer; }
-.btnrow { margin-top:22px; display:flex; gap:10px; }
-.btn { background:var(--accent); border:none; color:#fff; border-radius:8px; padding:9px 22px; font-size:14px; cursor:pointer; }
-.btn.ghost { background:none; border:1px solid var(--line); color:var(--fg); }
-.hint { color:var(--dim); font-size:12px; margin-top:6px; }
-.empty { text-align:center; color:var(--dim); margin-top:40vh; font-size:13px; }
-.errtext { color:var(--err); }
-</style>
+<title>aginx</title>
+<link rel="stylesheet" href="/assets/style.css">
 </head>
-<body x-data="app()" x-init="init()">
-<nav>
-  <h1>aginx-carrier</h1>
-  <template x-for="t in [['agents','分身'],['chat','聊天'],['settings','设置']]" :key="t[0]">
-    <button :class="tab===t[0] && 'active'" @click="switchTab(t[0])" x-text="t[1]"></button>
-  </template>
-</nav>
-
-<div class="banner" x-show="brainMissing && tab!=='settings'" @click="switchTab('settings')">
-  大脑未配置：先到「设置」填 API 地址与 Key 才能对话 →
-</div>
-
-<main x-show="tab==='agents'">
-  <div class="grid">
-    <template x-for="a in agents" :key="a.id">
-      <div class="card" @click="openChat(a)">
-        <div class="emoji" x-text="a.emoji || '🧬'"></div>
-        <h3 x-text="a.display_name"></h3>
-        <p x-text="a.description"></p>
-        <span class="badge" x-text="a.state"></span>
+<body>
+  <aside id="sidebar">
+    <div id="side-head">
+      <span id="brand-mark">aginx</span>
+      <div id="side-actions">
+        <button id="refresh-btn" class="icon-btn" title="刷新">⟳</button>
+        <button id="settings-btn" class="icon-btn" title="设置">⚙</button>
       </div>
-    </template>
-    <p class="empty" x-show="!agents.length">尚无分身——去 aginx-carrier 里用 clone-creator 创建，或等启动种子完成。</p>
-  </div>
-</main>
+    </div>
+    <div id="side-search"><input id="search-input" type="text" placeholder="搜索" autocomplete="off"></div>
+    <div id="contact-list"></div>
+    <div id="side-foot"><span class="dot" id="conn-dot"></span><span id="conn-label">本地</span></div>
+  </aside>
 
-<main x-show="tab==='chat'">
-  <div class="chat">
-    <div class="msgs" x-ref="msgs">
-      <template x-for="(m,i) in messages" :key="i">
-        <div>
-          <details class="think" x-show="m.think"><summary>💭 思考过程（点击展开）</summary><div style="white-space:pre-wrap;margin-top:6px" x-text="m.think"></div></details>
-          <div class="toolrow" x-show="false"></div>
-          <div :class="'msg '+(m.role==='user'?'user':'assistant')" x-show="m.text || m.role==='user'" x-text="m.text"></div>
+  <main id="chat-pane">
+    <div id="banner" class="hidden">大脑未配置——点击填写 API 地址与 Key</div>
+
+    <div id="chat-empty">
+      <div class="hero-mark">🧬</div>
+      <p>从左侧选择一个分身开始对话</p>
+    </div>
+
+    <div id="chat-active" class="hidden">
+      <header id="chat-head">
+        <div class="avatar" id="chat-avatar">?</div>
+        <div class="chat-title">
+          <div id="chat-name">—</div>
+          <div id="chat-sub">—</div>
         </div>
-      </template>
-      <template x-for="(t,i) in tools" :key="'t'+i">
-        <div class="toolrow" :style="t.is_error?'color:var(--err)':''" x-text="'🔧 '+t.name+': '+t.preview"></div>
-      </template>
-      <p class="empty" x-show="!messages.length && !busy">选一个话题开始聊。</p>
+        <div id="statusbar"><span id="spinner" class="hidden"></span><span id="status-text"></span></div>
+      </header>
+
+      <div id="chat-body"></div>
+
+      <footer id="box-ft">
+        <div id="toolbar"><a class="tool">😀</a><a class="tool">✂️</a><a class="tool">📎</a></div>
+        <div id="composer-content"><textarea id="msg-input" placeholder=""></textarea></div>
+        <div id="composer-action">
+          <span id="composer-desc">Enter 发送 · Shift+Enter 换行</span>
+          <button id="send-btn" class="btn-send">发送</button>
+        </div>
+      </footer>
     </div>
-    <div class="composer">
-      <textarea x-ref="input" placeholder="输入消息…" x-model="draft" @keydown.enter.prevent="send()"></textarea>
-      <button @click="send()" :disabled="busy || !draft.trim()" x-text="busy?'…':'发送'"></button>
-    </div>
-  </div>
-</main>
+  </main>
 
-<main x-show="tab==='settings'">
-  <div class="settings">
-    <label>API 地址（base_url，OpenAI 兼容端点）</label>
-    <input x-model="brain.base_url" placeholder="https://…/v1/chat/completions">
-
-    <label>Key 的环境变量名（key 本体不落 brain.json）</label>
-    <input x-model="brain.api_key_env" placeholder="AGINXBRAIN_API_KEY">
-
-    <label>API Key 值（保存即写入 ~/.aginx/carrier/.env 并立即生效）</label>
-    <input type="password" x-model="keyValue" placeholder="sk-…" autocomplete="off">
-
-    <label>默认 modality（model 路由标签）</label>
-    <input x-model="brain.default_modality">
-
-    <label>Modalities（名字 = 发给网关的 model 字段）</label>
-    <template x-for="(desc,name) in brain.modalities" :key="name">
-      <div class="modrow">
-        <input :value="name" readonly style="max-width:160px;color:var(--dim)">
-        <input :value="desc.description" @change="renameModalityDesc(name,$event.target.value)">
-        <button class="del" @click="deleteModality(name)">删</button>
+  <dialog id="settings-dialog">
+    <form onsubmit="return false">
+      <h3>设置 · 大脑（AginxBrain）</h3>
+      <label>API 地址<input id="cfg-base-url" type="text" placeholder="https://…" required></label>
+      <label>API Key 环境变量名<input id="cfg-key-env" type="text" placeholder="AGINXBRAIN_API_KEY"></label>
+      <label>API Key 值（写入 .env，留空不改）<input id="cfg-key-value" type="password" placeholder="sk-…"></label>
+      <label>默认模态<input id="cfg-default-modality" type="text" placeholder="chat"></label>
+      <fieldset>
+        <legend>模态列表</legend>
+        <div id="mod-list"></div>
+        <div id="mod-add-row">
+          <input id="mod-add-name" type="text" placeholder="名字">
+          <input id="mod-add-desc" type="text" placeholder="描述">
+          <button id="mod-add-btn" type="button" class="btn-ghost">添加</button>
+        </div>
+      </fieldset>
+      <div class="hint" id="settings-hint"></div>
+      <div class="dialog-actions">
+        <button type="button" id="settings-cancel" class="btn-ghost">取消</button>
+        <button type="button" id="settings-save" class="btn-primary">保存</button>
       </div>
-    </template>
-    <div class="modrow">
-      <input x-model="newModalityName" placeholder="新 modality 名">
-      <button class="btn ghost" style="width:auto;padding:0 14px" @click="addModality()">添加</button>
-    </div>
+    </form>
+  </dialog>
 
-    <div class="btnrow">
-      <button class="btn" @click="saveBrain()" x-text="savedHint||'保存设置'"></button>
-      <button class="btn ghost" x-show="keyValue.trim()" @click="saveKey()" x-text="keyHint||'保存 Key'"></button>
-    </div>
-    <p class="hint" x-text="brainError" style="color:var(--err)"></p>
-  </div>
-</main>
-
-<script>
-function app() {
-  return {
-    tab: 'agents',
-    agents: [],
-    currentAgent: null,
-    messages: [],
-    tools: [],
-    draft: '',
-    busy: false,
-    brain: { base_url:'', api_key_env:'', default_modality:'chat', modalities:{} },
-    keyValue: '',
-    newModalityName: '',
-    savedHint: '', keyHint: '', brainError: '',
-    get brainMissing() { return !this.brain.base_url },
-
-    async init() {
-      this.senderId = localStorage.getItem('oc_webui_sender') ||
-        (localStorage.setItem('oc_webui_sender', crypto.randomUUID().slice(0,8)), localStorage.getItem('oc_webui_sender'));
-      await this.refreshAgents();
-      await this.loadBrain();
-      setInterval(() => this.tab==='agents' && this.refreshAgents(), 15000);
-    },
-    api(path, opts={}) {
-      opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
-      return fetch(path, opts);
-    },
-    async refreshAgents() {
-      try {
-        const r = await this.api('/api/agents');
-        const j = await r.json();
-        this.agents = j.agents || [];
-      } catch (e) {}
-    },
-    async loadBrain() {
-      try { this.brain = Object.assign(this.brain, await (await this.api('/api/brain')).json()); } catch(e) {}
-    },
-    switchTab(t) { this.tab = t; if (t==='agents') this.refreshAgents(); if (t==='settings') this.loadBrain(); },
-    async openChat(a) {
-      this.currentAgent = a; this.tab = 'chat';
-      this.messages = []; this.tools = [];
-      try {
-        const j = await (await this.api(`/api/history?agent=${encodeURIComponent(a.name)}&sender=${this.senderId}`)).json();
-        this.messages = (j.messages||[]).map(m => ({role:m.role, text:m.text}));
-      } catch(e) {}
-      this.$nextTick(() => this.scrollBottom());
-    },
-    scrollBottom() {
-      const el = this.$refs.msgs;
-      if (el) el.scrollTop = el.scrollHeight;
-    },
-    async send() {
-      const text = this.draft.trim();
-      if (!text || this.busy || !this.currentAgent) return;
-      this.draft = ''; this.busy = true;
-      this.messages.push({role:'user', text});
-      const reply = {role:'assistant', text:''};
-      let think = '';
-      let toolFlush = 0;
-      this.messages.push(reply);
-      this.scrollBottom();
-      try {
-        const resp = await this.api(`/api/chat/${encodeURIComponent(this.currentAgent.name)}`, {
-          method:'POST', body: JSON.stringify({message:text, sender_id:this.senderId})
-        });
-        if (!resp.ok || !resp.body) {
-          reply.text = `[错误] HTTP ${resp.status}`; this.busy=false; return;
-        }
-        const reader = resp.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        for (;;) {
-          const {done, value} = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, {stream:true});
-          let idx;
-          while ((idx = buf.indexOf('\n\n')) >= 0) {
-            const frame = buf.slice(0, idx); buf = buf.slice(idx+2);
-            for (const line of frame.split('\n')) {
-              if (!line.startsWith('data:')) continue;
-              let ev; try { ev = JSON.parse(line.slice(5)) } catch { continue }
-              if (ev.type === 'delta') { reply.text += ev.text; }
-              else if (ev.type === 'thinking') { think += ev.text; reply.think = think; }
-              else if (ev.type === 'tool') { this.tools.push(ev); }
-              else if (ev.type === 'done') {
-                if (!reply.text && ev.response) reply.text = ev.response;
-                if (ev.silent && !reply.text) reply.text = '';
-              }
-              else if (ev.type === 'error') { reply.text += (reply.text?'\n':'') + '[错误] ' + ev.message; }
-              this.scrollBottom();
-            }
-          }
-        }
-      } catch (e) { reply.text = (reply.text?reply.text+'\n':'') + '[连接中断] ' + e.message; }
-      finally {
-        this.busy = false;
-        // 收尾：把流式期间累积的 assistant 文本固化进历史（服务端已存 session）
-        this.tools = [];
-        this.scrollBottom();
-      }
-    },
-    renameModalityDesc(name, desc) { this.brain.modalities[name].description = desc; },
-    addModality() {
-      const n = this.newModalityName.trim();
-      if (n && !this.brain.modalities[n]) this.brain.modalities[n] = {description:n};
-      this.newModalityName = '';
-    },
-    deleteModality(name) { delete this.brain.modalities[name]; this.brain.modalities = {...this.brain.modalities}; },
-    async saveBrain() {
-      this.savedHint=''; this.brainError='';
-      try {
-        const r = await this.api('/api/brain', {method:'PUT', body:JSON.stringify({
-          base_url:this.brain.base_url, api_key_env:this.brain.api_key_env,
-          default_modality:this.brain.default_modality||'chat', modalities:this.brain.modalities
-        })});
-        if (!r.ok) throw new Error('HTTP '+r.status);
-        this.savedHint = '已保存 ✓'; setTimeout(()=>this.savedHint='', 2000);
-      } catch(e) { this.brainError = '保存失败: '+e.message; }
-    },
-    async saveKey() {
-      this.keyHint=''; this.brainError='';
-      try {
-        const r = await this.api('/api/key', {method:'POST', body:JSON.stringify({name:this.brain.api_key_env||'AGINXBRAIN_API_KEY', value:this.keyValue})});
-        if (!r.ok) throw new Error('HTTP '+r.status);
-        this.keyValue=''; this.keyHint='Key 已保存 ✓'; setTimeout(()=>this.keyHint='', 2000);
-      } catch(e) { this.brainError = 'Key 保存失败: '+e.message; }
-    },
-  }
-}
-</script>
+  <script src="/assets/app.js"></script>
 </body>
 </html>

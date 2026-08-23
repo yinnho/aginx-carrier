@@ -21,7 +21,8 @@ use crate::env_file;
 use crate::trust;
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
-const ALPINE_JS: &str = include_str!("../assets/alpine.min.js");
+const STYLE_CSS: &str = include_str!("../assets/style.css");
+const APP_JS: &str = include_str!("../assets/app.js");
 
 pub struct WebState {
     kernel: Arc<CarrierKernel>,
@@ -54,7 +55,8 @@ pub async fn serve(kernel: Arc<CarrierKernel>, listen: String) {
 fn build_app(state: Arc<WebState>) -> Router {
     Router::new()
         .route("/", get(index))
-        .route("/assets/alpine.min.js", get(alpine))
+        .route("/assets/style.css", get(style_css))
+        .route("/assets/app.js", get(app_js))
         .route("/api/agents", get(list_agents))
         .route("/api/chat/{agent}", post(chat))
         .route("/api/history", get(history))
@@ -96,8 +98,12 @@ async fn index() -> Response {
     ([("cache-control", "no-cache"), ("content-type", "text/html; charset=utf-8")], INDEX_HTML).into_response()
 }
 
-async fn alpine() -> Response {
-    ([("cache-control", "no-cache"), ("content-type", "application/javascript; charset=utf-8")], ALPINE_JS).into_response()
+async fn style_css() -> Response {
+    ([("cache-control", "no-cache"), ("content-type", "text/css; charset=utf-8")], STYLE_CSS).into_response()
+}
+
+async fn app_js() -> Response {
+    ([("cache-control", "no-cache"), ("content-type", "application/javascript; charset=utf-8")], APP_JS).into_response()
 }
 
 async fn list_agents(State(st): State<Arc<WebState>>) -> Response {
@@ -115,6 +121,8 @@ async fn list_agents(State(st): State<Arc<WebState>>) -> Response {
                 "state": format!("{:?}", e.state),
                 "emoji": e.identity.emoji,
                 "color": e.identity.color,
+                "model": e.manifest.model.modality,
+                "last_active": e.last_active.to_rfc3339(),
             })
         })
         .collect();

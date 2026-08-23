@@ -37,7 +37,9 @@ pub fn verify(headers: &HeaderMap, _listen_host: &str) -> Result<(), StatusCode>
             .or_else(|| origin.strip_prefix("https://"))
             .and_then(host_authority)
             .ok_or(StatusCode::FORBIDDEN)?;
-        if !origin_host.eq_ignore_ascii_case(hostname) {
+        // 回环地址互为同源（127.x ↔ localhost ↔ ::1 都是本机）；
+        // 非回环 Origin 一律拒。
+        if !(is_loopback_hostname(origin_host) && is_loopback_hostname(hostname)) {
             return Err(StatusCode::FORBIDDEN);
         }
     }
@@ -113,11 +115,16 @@ mod tests {
     }
 
     #[test]
-    fn origin_must_match_host() {
-        let ok = hm(&[("host", "localhost:8703"), ("origin", "http://localhost:8703")]);
-        assert!(verify(&ok, "").is_ok());
+    fn origin_must_be_loopback() {
+        // 回环地址互为同源（Safari 场景：URL 是 127.0.0.1，Origin 可能是 localhost）
+        let ok1 = hm(&[("host", "127.0.0.1:8703"), ("origin", "http://localhost:8703")]);
+        assert!(verify(&ok1, "").is_ok());
+        let ok2 = hm(&[("host", "localhost:8703"), ("origin", "http://127.0.0.1:8703")]);
+        assert!(verify(&ok2, "").is_ok());
         let bad = hm(&[("host", "localhost:8703"), ("origin", "http://evil.com")]);
         assert_eq!(verify(&bad, ""), Err(StatusCode::FORBIDDEN));
+        let bad_ip = hm(&[("host", "localhost:8703"), ("origin", "http://192.168.1.5:8703")]);
+        assert_eq!(verify(&bad_ip, ""), Err(StatusCode::FORBIDDEN));
         let null_origin = hm(&[("host", "localhost:8703"), ("origin", "null")]);
         assert_eq!(verify(&null_origin, ""), Err(StatusCode::FORBIDDEN));
         // 无 Origin 放行（Host 已绑定请求）
