@@ -80,6 +80,11 @@ carrier-kernel = { path = "crates/kernel" }
 carrier-ilink = { path = "crates/ilink" }
 carrier-webhook = { path = "crates/webhook" }
 carrier-webui = { path = "crates/webui" }
+# webui agent:// 客户端（第三刀：经网关路由外部 CLI 工具），版本对齐 agc
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1"
+webpki-roots = "1"
 
 # Webhook inbound channel HTTP server (first server-side HTTP surface)
 axum = "0.8"

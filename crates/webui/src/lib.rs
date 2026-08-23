@@ -5,9 +5,11 @@
 //! 浏览器即客户端；信任模型照 dsh（Host 围栏防 DNS rebinding / 拒跨站 /
 //! POST 仅 JSON），无 token——loopback 即信任边界。
 
+pub mod agent_client;
 pub mod env_file;
 pub mod market;
 pub mod server;
+pub mod tool_store;
 pub mod trust;
 
 pub use server::serve;
