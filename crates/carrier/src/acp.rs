@@ -290,6 +290,11 @@ async fn handle_prompt(
             .get("activeFlow")
             .and_then(|f| f.as_str())
             .map(|s| s.to_string());
+        // 借用者身份：网关把鉴权身份透传下来做准入/配额；本地直连不带。
+        let borrower = params
+            .get("borrower")
+            .and_then(|b| b.as_str())
+            .map(|s| s.to_string());
         handle_borrowed_prompt(
             Arc::clone(&out),
             id,
@@ -300,6 +305,7 @@ async fn handle_prompt(
             ticket_val,
             materials,
             active_flow,
+            borrower,
         )
         .await;
         return;
@@ -361,6 +367,7 @@ async fn handle_borrowed_prompt(
     ticket_val: serde_json::Value,
     materials: Vec<carrier_kernel::messaging::BorrowedMaterial>,
     active_flow: Option<String>,
+    borrower: Option<String>,
 ) {
     let ticket: SessionTicket = match serde_json::from_value(ticket_val) {
         Ok(t) => t,
@@ -379,6 +386,7 @@ async fn handle_borrowed_prompt(
             active_flow.as_deref(),
             &materials,
             None,
+            borrower.as_deref(),
         )
         .await
     {

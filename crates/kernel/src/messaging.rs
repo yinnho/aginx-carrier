@@ -1970,7 +1970,39 @@ impl CarrierKernel {
         active_flow: Option<&str>,
         materials: &[BorrowedMaterial],
         stream_tx: Option<tokio::sync::mpsc::Sender<StreamEvent>>,
+        borrower: Option<&str>,
     ) -> KernelResult<BorrowedTurnOutcome> {
+        // 准入与配额：enabled 总开关 → allowlist 名单门（名单非空时）→
+        // 每小时轮次上限（按 borrower+agent 计数）。本地直连（borrower 为空）
+        // 免名单门但照常计数——主人自己用不受限，外部身份受双重闸。
+        let policy = &self.config.borrow;
+        let borrower_id = borrower.unwrap_or("local");
+        if !policy.enabled {
+            return Err(KernelError::Carrier(CarrierError::InvalidInput(
+                "borrowing is disabled on this carrier".to_string(),
+            )));
+        }
+        if borrower.is_some()
+            && !policy.allow_borrowers.is_empty()
+            && !policy.allow_borrowers.iter().any(|a| a == borrower_id)
+        {
+            warn!(borrower = %borrower_id, agent = %agent_id, "borrow request rejected by allowlist");
+            return Err(KernelError::Carrier(CarrierError::InvalidInput(format!(
+                "borrower {:?} is not allowed to borrow this agent",
+                borrower_id
+            ))));
+        }
+        if policy.max_turns_per_hour > 0 {
+            let used = self.record_borrow_usage(borrower_id, &agent_id.to_string())?;
+            if used > policy.max_turns_per_hour {
+                warn!(borrower = %borrower_id, agent = %agent_id, used, limit = policy.max_turns_per_hour, "borrow rate limit exceeded");
+                return Err(KernelError::Carrier(CarrierError::InvalidInput(format!(
+                    "borrow rate limit exceeded: {} turns/hour (used {})",
+                    policy.max_turns_per_hour, used
+                ))));
+            }
+        }
+
         let entry = self.registry.get(agent_id).ok_or_else(|| {
             KernelError::Carrier(CarrierError::AgentNotFound(agent_id.to_string()))
         })?;
@@ -2239,6 +2271,63 @@ impl CarrierKernel {
         };
 
         Ok(outcome)
+    }
+
+    /// 借用用量台账：追加一行 `{ts, borrower, agent}` 到
+    /// `{data_dir}/borrow_usage.jsonl` 并返回该 borrower+agent 过去一小时
+    /// 的总轮次（含本次）。台账是唯一状态——与借用轮的无状态原则一致，
+    /// 它只记录"谁借了几次"，不承载任何会话内容。
+    fn record_borrow_usage(&self, borrower: &str, agent: &str) -> KernelResult<u32> {
+        use std::io::Write as _;
+
+        let path = self
+            .config
+            .data_dir
+            .join("borrow_usage.jsonl");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                KernelError::Carrier(CarrierError::Internal(format!(
+                    "borrow usage dir failed: {e}"
+                )))
+            })?;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let line = format!(
+            "{}\n",
+            serde_json::json!({"ts": now, "borrower": borrower, "agent": agent})
+        );
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(line.as_bytes()))
+            .map_err(|e| {
+                KernelError::Carrier(CarrierError::Internal(format!(
+                    "borrow usage append failed: {e}"
+                )))
+            })?;
+
+        // 滑窗计数：读全量（个人安装规模下极小），数 borrower+agent 一小时内
+        // 的行数——本次已追加，天然计入。
+        let window_start = now.saturating_sub(3600);
+        let mut used: u32 = 0;
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for l in content.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else {
+                    continue;
+                };
+                if v.get("borrower").and_then(|b| b.as_str()) == Some(borrower)
+                    && v.get("agent").and_then(|a| a.as_str()) == Some(agent)
+                    && v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0) >= window_start
+                {
+                    used += 1;
+                }
+            }
+        }
+        Ok(used)
     }
 
     /// Execute the default LLM-based agent loop.
@@ -3640,7 +3729,7 @@ mod tests {
 
         // 第一轮：空票据进。
         let out1 = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "ALPHA-MARKER", None, None, &[], None)
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "ALPHA-MARKER", None, None, &[], None, None)
             .await
             .expect("first borrowed turn should succeed");
         assert!(!out1.response.is_empty());
@@ -3655,7 +3744,7 @@ mod tests {
 
         // 第二轮：回喂第一轮票据——echo 必须同时看见 ALPHA 与 BETA。
         let out2 = kernel
-            .run_borrowed_turn(agent_id, out1.ticket, "BETA-MARKER", None, None, &[], None)
+            .run_borrowed_turn(agent_id, out1.ticket, "BETA-MARKER", None, None, &[], None, None)
             .await
             .expect("second borrowed turn should succeed");
         assert!(
@@ -3759,6 +3848,7 @@ mod tests {
                 None,
                 &materials,
                 None,
+                None,
             )
             .await
             .expect("materials turn should succeed");
@@ -3783,7 +3873,7 @@ mod tests {
             content: b"x".to_vec(),
         }];
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &evil, None)
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &evil, None, None)
             .await
             .expect_err("traversal name must be rejected");
         assert!(err.to_string().contains("bad borrowed material name"));
@@ -3794,7 +3884,7 @@ mod tests {
             content: vec![0u8; super::BORROWED_MATERIAL_MAX_FILE + 1],
         }];
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &big, None)
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &big, None, None)
             .await
             .expect_err("oversize material must be rejected");
         assert!(err.to_string().contains("exceeds"));
@@ -3815,6 +3905,7 @@ mod tests {
                 None,
                 None,
                 &materials,
+                None,
                 None,
             )
             .await
@@ -3902,7 +3993,7 @@ mod tests {
         kernel.registry.register(entry).expect("register");
 
         let out = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "生成报告", None, None, &[], None)
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "生成报告", None, None, &[], None, None)
             .await
             .expect("output turn should succeed");
 
@@ -3928,9 +4019,142 @@ mod tests {
 
         // 无素材轮也建 output/（提示段始终注入）——空产物时 files 为空即可。
         let out2 = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "再来一轮", None, None, &[], None)
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "再来一轮", None, None, &[], None, None)
             .await
             .expect("second output turn should succeed");
         assert!(out2.files.is_empty());
+    }
+
+    /// 借用准入与配额：allowlist 拒绝名单外身份；每小时轮次上限触发；
+    /// 本地直连（borrower=None）免名单门。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn borrowed_turn_admission_and_rate_limit() {
+        use crate::kernel::CarrierKernel;
+        use carrier_memory::session::SessionTicket;
+        use carrier_types::config::{BorrowPolicyConfig, KernelConfig};
+
+        use carrier_runtime::llm_driver::{
+            CompletionRequest, CompletionResponse, LlmDriver, LlmError,
+        };
+        use carrier_types::message::{ContentBlock, StopReason, TokenUsage};
+
+        struct Echo;
+        #[async_trait::async_trait]
+        impl LlmDriver for Echo {
+            async fn complete(
+                &self,
+                _request: CompletionRequest,
+            ) -> Result<CompletionResponse, LlmError> {
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "ok".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                    media: None,
+                })
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let brain = serde_json::json!({
+            "base_url": "http://127.0.0.1:1/v1/chat/completions",
+            "api_key_env": "",
+            "default_modality": "chat",
+            "modalities": { "chat": { "description": "test" } }
+        });
+        std::fs::write(tmp.path().join("brain.json"), brain.to_string()).unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            borrow: BorrowPolicyConfig {
+                enabled: true,
+                allow_borrowers: vec!["friend-a".to_string()],
+                max_turns_per_hour: 2,
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = CarrierKernel::boot_with_config(config).expect("kernel boot");
+        install_test_driver(&kernel, Echo);
+
+        let entry = entry_with_workspace(std::path::Path::new("/tmp/nonexistent-ws"));
+        let agent_id = entry.id;
+        kernel.registry.register(entry).expect("register");
+
+        // 名单外身份 → 拒绝，且不产生台账计数。
+        let err = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "hi", None, None, &[], None, Some("stranger"))
+            .await
+            .expect_err("outsider must be rejected");
+        assert!(err.to_string().contains("not allowed to borrow"));
+
+        // 名单内身份：第 1、2 轮通过（上限 2），第 3 轮触发限流。
+        kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "1", None, None, &[], None, Some("friend-a"))
+            .await
+            .expect("turn 1 within limit");
+        kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "2", None, None, &[], None, Some("friend-a"))
+            .await
+            .expect("turn 2 at limit");
+        let err = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "3", None, None, &[], None, Some("friend-a"))
+            .await
+            .expect_err("turn 3 must hit rate limit");
+        assert!(err.to_string().contains("rate limit exceeded"));
+
+        // 本地直连（borrower=None）不受名单门限制——但配额按 "local" 独立计。
+        let out = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "local", None, None, &[], None, None)
+            .await
+            .expect("local direct turn must bypass allowlist");
+        assert!(!out.response.is_empty());
+
+        // 台账存在且只含元数据（无消息内容）。
+        let ledger = std::fs::read_to_string(tmp.path().join("data/borrow_usage.jsonl")).unwrap();
+        assert!(ledger.contains("\"borrower\":\"friend-a\""));
+        assert!(!ledger.contains("ALPHA") && !ledger.contains("生成报告"));
+    }
+
+    /// enabled=false 总开关：一切借用轮直接拒绝。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn borrowed_turn_disabled_rejects_all() {
+        use crate::kernel::CarrierKernel;
+        use carrier_memory::session::SessionTicket;
+        use carrier_types::config::{BorrowPolicyConfig, KernelConfig};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let brain = serde_json::json!({
+            "base_url": "http://127.0.0.1:1/v1/chat/completions",
+            "api_key_env": "",
+            "default_modality": "chat",
+            "modalities": { "chat": { "description": "test" } }
+        });
+        std::fs::write(tmp.path().join("brain.json"), brain.to_string()).unwrap();
+        let config = KernelConfig {
+            home_dir: tmp.path().to_path_buf(),
+            data_dir: tmp.path().join("data"),
+            borrow: BorrowPolicyConfig {
+                enabled: false,
+                ..BorrowPolicyConfig::default()
+            },
+            ..KernelConfig::default()
+        };
+        let kernel = CarrierKernel::boot_with_config(config).expect("kernel boot");
+
+        let entry = entry_with_workspace(std::path::Path::new("/tmp/nonexistent-ws"));
+        let agent_id = entry.id;
+        kernel.registry.register(entry).expect("register");
+
+        let err = kernel
+            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "hi", None, None, &[], None, None)
+            .await
+            .expect_err("disabled borrowing must reject even local turns");
+        assert!(err.to_string().contains("borrowing is disabled"));
     }
 }

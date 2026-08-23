@@ -688,6 +688,37 @@ pub struct KernelConfig {
     /// default off; enable in config.toml to flip a deployment, then fleet.
     #[serde(default)]
     pub session_event_source: bool,
+    /// 借用准入与配额：谁能借（allowlist）+ 每小时轮次上限。
+    #[serde(default)]
+    pub borrow: BorrowPolicyConfig,
+}
+
+/// 借用准入与配额策略（config.toml `[borrow]` 段）。
+///
+/// - `enabled = false` 直接拒绝一切借用轮。
+/// - `allow_borrowers` 为空 = 不设名单门，任何身份可借（个人安装默认，
+///   反正算力是自己的）；非空 = 只有名单内的 borrower 身份可借。
+/// - `max_turns_per_hour` 按 borrower+agent 维度计数（台账
+///   `{data_dir}/borrow_usage.jsonl`），0 = 不限量。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BorrowPolicyConfig {
+    /// 总开关：false 时借用轮全部拒绝。
+    pub enabled: bool,
+    /// 允许的 borrower 身份列表；空 = 不限身份。
+    pub allow_borrowers: Vec<String>,
+    /// 单 borrower+agent 每小时最大轮次；0 = 不限量。
+    pub max_turns_per_hour: u32,
+}
+
+impl Default for BorrowPolicyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_borrowers: Vec::new(),
+            max_turns_per_hour: 30,
+        }
+    }
 }
 
 /// Per-channel configuration for tool permission filtering.
@@ -924,6 +955,7 @@ impl Default for KernelConfig {
             channels: HashMap::new(),
             trusted_signing_keys: Vec::new(),
             session_event_source: false,
+            borrow: BorrowPolicyConfig::default(),
         }
     }
 }
