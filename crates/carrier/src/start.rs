@@ -34,9 +34,19 @@ async fn async_main() -> anyhow::Result<()> {
 
     let cm = aginx_carrier::wiring::boot_channels(&kernel).await?;
 
+    // webhook HTTP 入站通道（daemon 形态专属；uniffi/移动端不起监听）。
+    // bind 失败只报错——不拖死 daemon 其余通道。
+    if kernel.config.webhook.enabled {
+        let kh: std::sync::Arc<dyn carrier_runtime::kernel_handle::KernelHandle> = kernel.clone();
+        let cfg = kernel.config.webhook.clone();
+        let bridge_tx = cm.bridge_sender();
+        tokio::spawn(carrier_webhook::serve(kh, bridge_tx, cfg));
+    }
+
     let tool_count = cm.tool_definitions().len();
     info!(
         tools = tool_count,
+        webhook = kernel.config.webhook.enabled,
         "aginx-carrier 守护进程就绪（iLink 通道在线，Ctrl-C 退出）"
     );
 

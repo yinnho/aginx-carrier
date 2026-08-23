@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook"]
 
 [workspace.package]
 version = "0.1.0"
@@ -78,6 +78,10 @@ shlex = "1"
 carrier-runtime = { path = "crates/runtime" }
 carrier-kernel = { path = "crates/kernel" }
 carrier-ilink = { path = "crates/ilink" }
+carrier-webhook = { path = "crates/webhook" }
+
+# Webhook inbound channel HTTP server (first server-side HTTP surface)
+axum = "0.8"
 
 carrier = { path = "crates/carrier" }
 

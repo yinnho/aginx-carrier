@@ -128,6 +128,18 @@ pub async fn boot_channels(kernel: &Arc<CarrierKernel>) -> anyhow::Result<Channe
 
     cm.start().await;
 
+    // webhook 入站通道：出站侧注册（异步轮回复的日志归宿，防 bridge 报
+    // Channel-not-found）+ 路由种入。HTTP 监听在 start.rs（daemon 形态专属，
+    // 移动端不起监听）。send_fn 捕获同一 channels map，start 后注册对出站
+    // 查表可见；WebhookChannel::start 是 noop，不被 start() 调到也成立。
+    if kernel.config.webhook.enabled {
+        cm.register("webhook", Box::new(carrier_webhook::WebhookChannel));
+        for hook in &kernel.config.webhook.hooks {
+            cm.set_sender_route(&hook.name, &hook.agent);
+            info!(hook = %hook.name, agent = %hook.agent, "webhook route seeded");
+        }
+    }
+
     // 出站通道：send（cron 主动推送探针）+ deliver（富媒体投递）注入 kernel。
     {
         let send_fn = cm.make_channel_send_fn();

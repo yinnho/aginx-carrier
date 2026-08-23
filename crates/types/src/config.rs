@@ -691,6 +691,78 @@ pub struct KernelConfig {
     /// 借用准入与配额：谁能借（allowlist）+ 每小时轮次上限。
     #[serde(default)]
     pub borrow: BorrowPolicyConfig,
+    /// webhook HTTP 入站通道（机器→agent 事件触达）。
+    #[serde(default)]
+    pub webhook: WebhookConfig,
+}
+
+/// webhook HTTP 入站通道（config.toml `[webhook]` 段）——分身被外部事件
+/// 触达的第二条入站渠道（第一条 iLink 是人→agent，这条是机器→agent）。
+///
+/// - `enabled = false`（默认）：不起监听、不注册通道——移动端（uniffi 经
+///   carrier lib 编译）安全，服务只在 daemon `start` 形态 spawn。
+/// - `hooks`：每条 `{name, agent, token}` 绑一个分身；name 是 URL 路径段
+///   兼路由键，token 是调用方凭证（Bearer / X-Webhook-Token / ?token=）。
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebhookConfig {
+    /// 总开关：false 不起 HTTP 监听、不注册通道。
+    pub enabled: bool,
+    /// 监听地址；默认仅本机回环，公网暴露走 nginx 反代。
+    pub listen: String,
+    /// `?wait=N` 同步模式的上限秒数（请求值与其取小，clamp 1..=600）。
+    pub max_wait_secs: u64,
+    /// 单请求 body 上限（字节）。
+    pub max_body_bytes: usize,
+    /// 命名 hooks；name 限 `[a-z0-9-]`，token ≥16 字符，agent 必须已注册。
+    pub hooks: Vec<WebhookHook>,
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: "127.0.0.1:8702".to_string(),
+            max_wait_secs: 120,
+            max_body_bytes: 1024 * 1024,
+            hooks: Vec::new(),
+        }
+    }
+}
+
+/// 单个 webhook hook：一个稳定的外部事件源 → 一个分身。
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebhookHook {
+    /// hook 名：URL 路径段（`/hook/{name}`）+ 路由键 + 数据目录名。
+    pub name: String,
+    /// 目标分身名（kernel registry 里的 agent 名）。
+    pub agent: String,
+    /// 调用方凭证（恒时比较；Bearer / X-Webhook-Token / ?token= 三选一）。
+    pub token: String,
+}
+
+/// token 不进日志/Debug 输出。
+impl std::fmt::Debug for WebhookHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookHook")
+            .field("name", &self.name)
+            .field("agent", &self.agent)
+            .field("token", &if self.token.is_empty() { "<empty>" } else { "<redacted>" })
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for WebhookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookConfig")
+            .field("enabled", &self.enabled)
+            .field("listen", &self.listen)
+            .field("max_wait_secs", &self.max_wait_secs)
+            .field("max_body_bytes", &self.max_body_bytes)
+            .field("hooks", &self.hooks)
+            .finish()
+    }
 }
 
 /// 借用准入与配额策略（config.toml `[borrow]` 段）。
@@ -956,6 +1028,7 @@ impl Default for KernelConfig {
             trusted_signing_keys: Vec::new(),
             session_event_source: false,
             borrow: BorrowPolicyConfig::default(),
+            webhook: WebhookConfig::default(),
         }
     }
 }
@@ -1559,5 +1632,34 @@ mod tests {
         assert_eq!(config.browser.max_sessions, browser_sessions);
         assert_eq!(config.web.fetch.max_response_bytes, fetch_bytes);
         assert_eq!(config.web.fetch.timeout_secs, fetch_timeout);
+    }
+
+    #[test]
+    fn webhook_config_parses_and_defaults() {
+        // 显式配置解析。
+        let toml_str = r#"
+[webhook]
+enabled = true
+listen = "0.0.0.0:8702"
+
+[[webhook.hooks]]
+name = "ci"
+agent = "travel-planner"
+token = "tok-0123456789abcdef"
+"#;
+        let cfg: KernelConfig = toml::from_str(toml_str).unwrap();
+        assert!(cfg.webhook.enabled);
+        assert_eq!(cfg.webhook.listen, "0.0.0.0:8702");
+        assert_eq!(cfg.webhook.max_wait_secs, 120); // 默认值落位
+        assert_eq!(cfg.webhook.hooks.len(), 1);
+        assert_eq!(cfg.webhook.hooks[0].name, "ci");
+        assert_eq!(cfg.webhook.hooks[0].agent, "travel-planner");
+        // 空配置：disabled 默认（移动端安全）。
+        let empty: KernelConfig = toml::from_str("").unwrap();
+        assert!(!empty.webhook.enabled);
+        assert_eq!(empty.webhook.listen, "127.0.0.1:8702");
+        assert!(empty.webhook.hooks.is_empty());
+        // token 不进 Debug。
+        assert!(!format!("{:?}", cfg.webhook.hooks[0]).contains("tok-0123456789abcdef"));
     }
 }

@@ -11,10 +11,10 @@
 
 ## 约定
 
-- **crate 命名**：`carrier-*`（carrier-types / carrier-memory / carrier-runtime / carrier-kernel / carrier-lifecycle / carrier-clone），bin 叫 `aginx-carrier`
+- **crate 命名**：`carrier-*`（carrier-types / carrier-memory / carrier-runtime / carrier-kernel / carrier-lifecycle / carrier-clone / carrier-ilink / carrier-webhook），bin 叫 `aginx-carrier`
 - **配置/数据目录**：`~/.aginx/carrier/`
 - **git 历史**：纯 cp 不带历史，opencarrier 仓库是档案（历史在那里查）
-- **通道范围**：初期只带 iLink（轮询、NAT 友好）；weixin-oa/企微kf 后置（等 webhook HTTP 入口方案）
+- **通道范围**：入站两条——iLink（人→agent）+ webhook（机器→agent，`carrier-webhook`，daemon `start` 专属 HTTP 监听，默认关、移动端不起）；weixin-oa/企微kf 后置
 
 ## Build & Verify Workflow
 

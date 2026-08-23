@@ -31,4 +31,5 @@ carrier-types = { workspace = true }
 carrier-runtime = { workspace = true }
 carrier-memory = { workspace = true }
 carrier-ilink = { workspace = true }
+carrier-webhook = { workspace = true }
 uuid = { workspace = true }
