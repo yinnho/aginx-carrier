@@ -12,6 +12,8 @@ const state = {
   view: 'chat', // 'chat' | 'market' | 'detail'
   market: { q: '', page: 1, templates: [], hasMore: false, keyOk: true, hubEnv: '', hubUrl: '' },
   installing: false,
+  tools: [], // 网关 agent（/api/tools）；网关不可达时只含已添加的 stale 项
+  cwdByTool: {}, // 工具 id -> 工作目录（空=默认；换目录＝新会话）
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -88,8 +90,24 @@ function renderContacts() {
     el.onclick = () => selectAgent(a);
     contactList.appendChild(el);
   }
+  // 网关工具（第三刀）：已添加的追加在分身后，🖥 徽标
+  for (const t of state.tools) {
+    if (!t.added) continue;
+    const hay = `${t.name} ${t.id} ${t.description}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    const isCur = state.current && state.current.kind === 'gateway' && state.current.id === t.id;
+    const el = document.createElement('div');
+    el.className = 'chat_item' + (isCur ? ' active' : '');
+    const prev = previewText({ name: t.id, description: `网关 · ${t.agent_type || 'agent'}`, model: '' });
+    el.innerHTML =
+      `<div class="avatar">🖥<span class="presence on"></span></div>` +
+      `<div class="meta"><div class="name">${escapeHtml(t.name || t.id)}</div>` +
+      `<div class="msg">${escapeHtml(prev.slice(0, 40))}</div></div>`;
+    el.onclick = () => selectTool(t);
+    contactList.appendChild(el);
+  }
   if (!contactList.children.length) {
-    contactList.innerHTML = `<div class="empty-list">${q ? '无匹配分身' : '还没有分身<br>点 ⟳ 刷新或用克隆大师创建'}</div>`;
+    contactList.innerHTML = `<div class="empty-list">${q ? '无匹配联系人' : '还没有联系人<br>点 ⟳ 刷新 · ＋ 装分身 · 🖥 接工具'}</div>`;
   }
 }
 
@@ -104,22 +122,53 @@ async function selectAgent(a) {
   $('chat-avatar').textContent = a.emoji || (a.display_name || a.name).slice(0, 1);
   $('chat-name').textContent = a.display_name || a.name;
   $('chat-sub').textContent = `${a.name} · ${a.model || '?'} · ${a.state === 'Running' ? '在线' : '离线'}`;
+  $('chat-cwd-row').classList.add('hidden');
   setStatus('', false);
+  await applyHistory(a.name);
+  scrollChat();
+  $('msg-input').focus();
+}
+
+/// 拉取并渲染一个联系人的历史（分身按 name，网关工具按 id + cwd）。
+async function applyHistory(key, cwd) {
   $('chat-body').innerHTML = '';
-  state.history.delete(a.name);
+  state.history.delete(key);
   try {
-    const data = await apiGet(
-      `/api/history?agent=${encodeURIComponent(a.name)}&sender=${encodeURIComponent(state.senderId)}`
-    );
+    let url = `/api/history?agent=${encodeURIComponent(key)}&sender=${encodeURIComponent(state.senderId)}`;
+    if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
+    const data = await apiGet(url);
     const msgs = (data.messages || []).map((m) => ({
       role: m.role === 'user' ? 'user' : 'agent',
       text: m.text || '',
     }));
-    state.history.set(a.name, msgs);
+    state.history.set(key, msgs);
     for (const m of msgs) appendBubble(m.role, m.text);
   } catch (e) {
     /* 历史拉取失败不阻塞聊天 */
   }
+}
+
+// ---------- 网关工具会话（第三刀：agent:// 经网关路由 CLI） ----------
+
+function cwdOf(toolId) {
+  if (state.cwdByTool[toolId] !== undefined) return state.cwdByTool[toolId];
+  const t = state.tools.find((x) => x.id === toolId);
+  return (t && t.default_cwd) || '';
+}
+
+async function selectTool(t) {
+  if (state.streaming) return;
+  state.current = { kind: 'gateway', id: t.id, name: t.name || t.id, emoji: '🖥' };
+  renderContacts();
+  $('chat-empty').classList.add('hidden');
+  $('chat-active').classList.remove('hidden');
+  $('chat-avatar').textContent = '🖥';
+  $('chat-name').textContent = t.name || t.id;
+  $('chat-sub').textContent = `网关 · ${t.agent_type || 'agent'} · ${t.id}`;
+  $('chat-cwd-row').classList.remove('hidden');
+  $('chat-cwd').value = cwdOf(t.id);
+  setStatus('', false);
+  await applyHistory(t.id, cwdOf(t.id) || undefined);
   scrollChat();
   $('msg-input').focus();
 }
@@ -189,8 +238,11 @@ async function sendMessage() {
   $('send-btn').disabled = true;
   input.value = '';
   const agent = state.current;
+  const isTool = agent.kind === 'gateway';
+  const key = isTool ? agent.id : agent.name; // 网关工具按 id 路由，分身按 name
+  const cwd = isTool ? cwdOf(agent.id) : '';
 
-  pushHist(agent.name, { role: 'user', text });
+  pushHist(key, { role: 'user', text });
   appendBubble('user', text);
   renderContacts();
 
@@ -201,10 +253,10 @@ async function sendMessage() {
   setStatus('思考中…', true);
 
   try {
-    const resp = await fetch(`/api/chat/${encodeURIComponent(agent.name)}`, {
+    const resp = await fetch(`/api/chat/${encodeURIComponent(key)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, sender_id: state.senderId }),
+      body: JSON.stringify({ message: text, sender_id: state.senderId, ...(cwd ? { cwd } : {}) }),
     });
     if (!resp.ok || !resp.body) {
       const t = await resp.text().catch(() => '');
@@ -236,7 +288,13 @@ async function sendMessage() {
             appendToolChip(ev.name, ev.preview, ev.is_error);
           } else if (ev.type === 'done') {
             if (!acc && ev.response) { acc = ev.response; bubble.textContent = acc; }
-            setStatus(`完成 · ${ev.tokens ?? '?'} tok · ${ev.iterations ?? '?'} 轮`, false);
+            if (ev.cost_usd != null) {
+              // 网关工具轮：真金白银计量（cost/duration），不折算 tok/轮
+              const dur = ev.duration_ms != null ? `${(ev.duration_ms / 1000).toFixed(1)}s` : '?';
+              setStatus(`完成 · $${Number(ev.cost_usd).toFixed(4)} · ${dur}`, false);
+            } else {
+              setStatus(`完成 · ${ev.tokens ?? '?'} tok · ${ev.iterations ?? '?'} 轮`, false);
+            }
           } else if (ev.type === 'error') {
             throw new Error(ev.message || 'agent 轮失败');
           }
@@ -249,7 +307,7 @@ async function sendMessage() {
       bubble.parentElement.remove();
       setStatus('完成（无文本回复）', false);
     } else {
-      pushHist(agent.name, { role: 'agent', text: acc });
+      pushHist(key, { role: 'agent', text: acc });
     }
   } catch (e) {
     bubble.classList.remove('streaming');
@@ -343,11 +401,11 @@ async function saveSettings() {
 
 function showView(v) {
   state.view = v;
-  const inMarket = v === 'market' || v === 'detail';
-  $('chat-pane').classList.toggle('hidden', inMarket);
-  $('market-pane').classList.toggle('hidden', !inMarket);
+  $('chat-pane').classList.toggle('hidden', v !== 'chat');
+  $('market-pane').classList.toggle('hidden', !(v === 'market' || v === 'detail'));
   $('mkt-list').classList.toggle('hidden', v !== 'market');
   $('mkt-detail').classList.toggle('hidden', v !== 'detail');
+  $('tools-pane').classList.toggle('hidden', v !== 'tools');
 }
 
 async function loadMarket(reset) {
@@ -589,6 +647,73 @@ async function saveHubKey() {
   }
 }
 
+// ---------- 接入本地工具页（第三刀：网关 agent 列表 / 添加 / 移除） ----------
+
+async function loadTools() {
+  let gwErr = '';
+  try {
+    const data = await apiGet('/api/tools');
+    state.tools = data.tools || [];
+    gwErr = data.gateway_error || '';
+  } catch (e) {
+    state.tools = [];
+    gwErr = e.message;
+  }
+  const banner = $('tools-banner');
+  if (gwErr) {
+    banner.textContent = `网关不可达：${gwErr}——已添加工具保留在联系人，恢复后可用`;
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
+  renderTools();
+  renderContacts();
+}
+
+function renderTools() {
+  const grid = $('tools-grid');
+  grid.innerHTML = '';
+  if (!state.tools.length) {
+    grid.innerHTML = '<div class="mkt-loading">网关没有可列出的 agent——在 ~/.aginx/agents/ 注册后重试</div>';
+    return;
+  }
+  for (const t of state.tools) {
+    const card = document.createElement('div');
+    card.className = 'mkt-card';
+    card.innerHTML =
+      `<div class="mkt-card-name">🖥 ${escapeHtml(t.name || t.id)}` +
+      `<span class="mkt-badge">${escapeHtml(t.agent_type || 'agent')}</span>` +
+      `${t.added ? '<span class="mkt-badge ok">已添加</span>' : ''}</div>` +
+      `<div class="mkt-card-desc">${escapeHtml((t.description || '').slice(0, 90) || '（无描述）')}</div>` +
+      `<div class="mkt-card-meta"><span class="mkt-card-id">${escapeHtml(t.id)}</span>` +
+      `<span>· 默认目录 ${escapeHtml(t.default_cwd || '')}</span></div>`;
+    const btn = document.createElement('button');
+    btn.className = t.added ? 'btn-ghost' : 'btn-primary';
+    btn.textContent = t.added ? '移除（清会话）' : '添加到联系人';
+    btn.onclick = async () => {
+      if (t.added && !confirm(`移除 ${t.name || t.id}？该工具的会话记录会一并清掉。`)) return;
+      btn.disabled = true;
+      try {
+        await apiSend(`/api/tools/${encodeURIComponent(t.id)}/${t.added ? 'remove' : 'add'}`, 'POST', {});
+        t.added = !t.added;
+      } catch (e) {
+        btn.disabled = false;
+        return;
+      }
+      // 移除的若正开着，退回空态
+      if (!t.added && state.current && state.current.kind === 'gateway' && state.current.id === t.id) {
+        state.current = null;
+        $('chat-active').classList.add('hidden');
+        $('chat-empty').classList.remove('hidden');
+      }
+      renderTools();
+      renderContacts();
+    };
+    card.appendChild(btn);
+    grid.appendChild(card);
+  }
+}
+
 // ---------- 事件接线 + 启动 ----------
 
 function wireEvents() {
@@ -599,10 +724,25 @@ function wireEvents() {
       sendMessage();
     }
   });
-  $('refresh-btn').onclick = loadAgents;
+  $('refresh-btn').onclick = () => { loadAgents(); loadTools(); };
   $('settings-btn').onclick = openSettings;
   $('banner').onclick = openSettings;
   $('search-input').addEventListener('input', renderContacts);
+
+  // 接入本地工具页（第三刀）
+  $('tools-btn').onclick = () => {
+    showView('tools');
+    loadTools();
+  };
+  $('tools-back').onclick = () => showView('chat');
+  $('chat-cwd').addEventListener('change', () => {
+    const cur = state.current;
+    if (!cur || cur.kind !== 'gateway' || state.streaming) return;
+    const v = $('chat-cwd').value.trim();
+    if (v === cwdOf(cur.id)) return;
+    state.cwdByTool[cur.id] = v;
+    applyHistory(cur.id, v || undefined); // 换目录＝新会话
+  });
 
   // 装分身页
   $('market-btn').onclick = () => {
@@ -634,7 +774,7 @@ function wireEvents() {
 
 async function boot() {
   wireEvents();
-  await Promise.all([loadAgents(), loadBrain()]);
+  await Promise.all([loadAgents(), loadBrain(), loadTools()]);
   if (brainMissing()) openSettings();
 }
 

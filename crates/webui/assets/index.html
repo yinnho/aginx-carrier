@@ -11,6 +11,7 @@
     <div id="side-head">
       <span id="brand-mark">aginx</span>
       <div id="side-actions">
+        <button id="tools-btn" class="icon-btn" title="接入本地工具（网关 agent）">🖥</button>
         <button id="market-btn" class="icon-btn" title="装分身（市场）">＋</button>
         <button id="refresh-btn" class="icon-btn" title="刷新">⟳</button>
         <button id="settings-btn" class="icon-btn" title="设置">⚙</button>
@@ -39,6 +40,12 @@
         <div id="statusbar"><span id="spinner" class="hidden"></span><span id="status-text"></span></div>
       </header>
 
+      <div id="chat-cwd-row" class="hidden">
+        <span class="cwd-label">📁 工作目录</span>
+        <input id="chat-cwd" type="text" placeholder="默认 ~/.aginx/carrier/external/<id>" spellcheck="false" autocomplete="off">
+        <span class="cwd-hint">改目录＝新会话</span>
+      </div>
+
       <div id="chat-body"></div>
 
       <footer id="box-ft">
@@ -64,6 +71,16 @@
     </div>
 
     <div id="mkt-detail" class="hidden"></div>
+  </main>
+
+  <main id="tools-pane" class="hidden">
+    <header id="tools-head">
+      <button id="tools-back" class="btn-ghost">← 返回</button>
+      <div class="mkt-title">接入本地工具 · 网关 agent</div>
+    </header>
+    <div id="tools-banner" class="hidden"></div>
+    <div id="tools-grid"></div>
+    <div class="mkt-note">列表来自本机 aginx 网关（agent:// listAgents）。添加后进入左侧联系人，聊天经网关路由到对应 CLI（如 Claude Code）；移除会一并清掉该工具的会话记录。</div>
   </main>
 
   <dialog id="hubkey-dialog">
