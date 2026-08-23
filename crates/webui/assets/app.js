@@ -383,6 +383,19 @@ function fmtSize(n) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// hub 的 tags 可能是数组、JSON 字符串（实测形态）或逗号串——统一成数组
+function toTags(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim()) {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed;
+    } catch { /* 按逗号串处理 */ }
+    return v.split(/[,，、]/).map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 function renderMarket() {
   const grid = $('mkt-grid');
   grid.innerHTML = '';
@@ -396,7 +409,7 @@ function renderMarket() {
     const badges = [];
     if (t.price > 0) badges.push(`<span class="mkt-badge paid">付费</span>`);
     if (t.visibility === 'private') badges.push(`<span class="mkt-badge priv">私有</span>`);
-    const tags = (t.tags || []).slice(0, 4)
+    const tags = toTags(t.tags).slice(0, 4)
       .map((x) => `<span class="mkt-chip">${escapeHtml(String(x))}</span>`).join('');
     card.innerHTML =
       `<div class="mkt-card-name">${escapeHtml(t.display_name || name)}${badges.join('')}</div>` +
@@ -462,7 +475,7 @@ function renderMarketDetail(d) {
       <span>${d.file_count} 个文件</span>
       <span>${fmtSize(d.total_bytes)}</span>
       ${d.author ? `<span>作者 ${escapeHtml(String(d.author))}</span>` : ''}
-      ${(d.tags || []).map((x) => `<span class="mkt-chip">${escapeHtml(String(x))}</span>`).join('')}
+      ${toTags(d.tags).map((x) => `<span class="mkt-chip">${escapeHtml(String(x))}</span>`).join('')}
     </div>`
   );
   if (d.description) blocks.push(`<div id="mkt-d-desc">${escapeHtml(d.description)}</div>`);
