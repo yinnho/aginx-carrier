@@ -564,3 +564,134 @@ fn update(out: &Arc<Mutex<std::io::Stdout>>, session_id: &str, update: serde_jso
         }),
     );
 }
+
+/// ACP.md 金样本互锁测试（协议立法层）。
+///
+/// ACP.md 住在隔壁 aginx 仓（`../aginx/ACP.md`，本仓 CARGO_MANIFEST_DIR 起
+/// `../../../`）——协议权威与三端实现由金样本互锁，文档与实现打架即测试红。
+/// 独立 clone（如 GitHub CI）没有该文件时跳过，不阻断。
+#[cfg(test)]
+mod golden_tests {
+    use super::*;
+
+    fn doc() -> Option<String> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../aginx/ACP.md");
+        match std::fs::read_to_string(path) {
+            Ok(d) => Some(d),
+            Err(_) => {
+                eprintln!("SKIP golden_tests: {path} 不存在（独立 clone 无 aginx 仓）");
+                None
+            }
+        }
+    }
+
+    fn golden(doc: &str, name: &str) -> serde_json::Value {
+        let marker = format!("<!-- golden: {name} -->");
+        let start = doc
+            .find(&marker)
+            .unwrap_or_else(|| panic!("ACP.md 缺金样本标记: {name}"));
+        let rest = &doc[start + marker.len()..];
+        let fence = rest
+            .find("```json")
+            .unwrap_or_else(|| panic!("金样本 {name} 后缺 ```json 围栏"));
+        let body = &rest[fence + "```json".len()..];
+        let end = body
+            .find("```")
+            .unwrap_or_else(|| panic!("金样本 {name} 围栏未闭合"));
+        serde_json::from_str(body[..end].trim())
+            .unwrap_or_else(|e| panic!("金样本 {name} 不是合法 JSON: {e}"))
+    }
+
+    /// 票据 wire 形状 camelCase：入↔出 roundtrip 必须逐字节等——锁死
+    /// SessionTicket 的 rename_all 与字段名（turnSummaries/contextWindowTokens）。
+    #[test]
+    fn ticket_roundtrip_identical() {
+        let Some(doc) = doc() else { return };
+        let sample = golden(&doc, "ticket_v1");
+        let ticket: SessionTicket =
+            serde_json::from_value(sample.clone()).expect("ticket_v1 应可解析为 SessionTicket");
+        let back = serde_json::to_value(&ticket).expect("SessionTicket 应可序列化");
+        assert_eq!(back, sample, "票据 wire 形状漂移：文档样本与 serde 不一致");
+        assert_eq!(ticket.version, SessionTicket::CURRENT_VERSION);
+    }
+
+    /// session/prompt（内部层）的借用五件套参数名 + prompt 块形状。
+    #[test]
+    fn internal_session_prompt_params_shape() {
+        let Some(doc) = doc() else { return };
+        let v = golden(&doc, "internal_session_prompt_borrowed_request");
+        let params = v.get("params").expect("params 必填");
+        for key in ["sessionId", "prompt", "sessionTicket", "materials", "activeFlow", "borrower"] {
+            assert!(params.get(key).is_some(), "session/prompt 缺参数 {key}");
+        }
+        let block = params.pointer("/prompt/0").expect("prompt[0] 必填");
+        assert_eq!(block.get("type").and_then(|t| t.as_str()), Some("text"));
+        let ticket_val = params.get("sessionTicket").unwrap().clone();
+        serde_json::from_value::<SessionTicket>(ticket_val)
+            .expect("session/prompt 内嵌票据应可解析");
+    }
+
+    /// 素材条目形状：parse_materials 期望 {name, contentBase64}（后者可 base64 解码）。
+    #[test]
+    fn material_entry_shape() {
+        let Some(doc) = doc() else { return };
+        let v = golden(&doc, "material_entry");
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["contentBase64", "name"]);
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(v.get("contentBase64").unwrap().as_str().unwrap())
+            .expect("金样本 contentBase64 应可解码");
+    }
+
+    /// 产物条目形状：BorrowedOutputFile 序列化键 = {name, contentBase64}。
+    #[test]
+    fn output_file_serialization_keys() {
+        let Some(doc) = doc() else { return };
+        let sample = golden(&doc, "output_file_entry");
+        let f = carrier_kernel::messaging::BorrowedOutputFile {
+            name: sample.get("name").unwrap().as_str().unwrap().to_string(),
+            content_base64: sample.get("contentBase64").unwrap().as_str().unwrap().to_string(),
+        };
+        let back = serde_json::to_value(&f).unwrap();
+        let mut keys: Vec<&str> = back.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["contentBase64", "name"]);
+    }
+
+    /// 桥最终响应（内部层）：stopReason 用 ACP 词汇 end_turn + 票据/产物在场。
+    #[test]
+    fn internal_final_result_shape() {
+        let Some(doc) = doc() else { return };
+        let v = golden(&doc, "internal_final_result_borrowed");
+        assert_eq!(
+            v.pointer("/result/stopReason").and_then(|s| s.as_str()),
+            Some("end_turn")
+        );
+        serde_json::from_value::<SessionTicket>(
+            v.pointer("/result/sessionTicket").unwrap().clone(),
+        )
+        .expect("最终响应内嵌票据应可解析");
+        let file = v.pointer("/result/files/0").expect("files[0] 必填");
+        assert!(file.get("name").is_some() && file.get("contentBase64").is_some());
+    }
+
+    /// session/update 通知形状：桥只发 agent_message_chunk。
+    #[test]
+    fn session_update_notification_shape() {
+        let Some(doc) = doc() else { return };
+        let v = golden(&doc, "internal_session_update_notification");
+        assert_eq!(
+            v.get("method").and_then(|m| m.as_str()),
+            Some("session/update")
+        );
+        assert_eq!(
+            v.pointer("/params/update/sessionUpdate").and_then(|s| s.as_str()),
+            Some("agent_message_chunk")
+        );
+        assert!(v.pointer("/params/update/content/text")
+            .and_then(|t| t.as_str())
+            .is_some());
+    }
+}

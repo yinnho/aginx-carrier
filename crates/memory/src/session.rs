@@ -33,7 +33,12 @@ pub struct Session {
 /// `Session`，在内存级 substrate 上跑一轮，再把更新后的状态打包回票据还给
 /// 用户侧。服务器全程零持久化——票据就是会话的唯一真源，由用户自己保管、
 /// 下一轮再提交。
+///
+/// wire 形状 camelCase（`turnSummaries`/`contextWindowTokens`），与协议其余
+/// 字段（sessionTicket/activeFlow/contentBase64）同一约定——金样本见 aginx
+/// 仓 ACP.md。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionTicket {
     /// 票据格式版本（当前 1）。
     pub version: u32,
