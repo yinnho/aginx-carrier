@@ -236,6 +236,15 @@ fn sse_frame(v: serde_json::Value) -> Event {
 /// 网关 agent 现列：listAgents 透传 + 台账标记。网关/relay 不可达时
 /// 返回空列表 + gateway_error（前端显示网关状态条，联系人不受影响）。
 async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
+    let default_cwd_for = |id: &str| {
+        st.kernel
+            .config
+            .home_dir
+            .join("external")
+            .join(id)
+            .to_string_lossy()
+            .to_string()
+    };
     let tools = match gateway_list_agents().await {
         Ok(agents) => agents
             .into_iter()
@@ -247,15 +256,34 @@ async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
                     "agent_type": a.agent_type,
                     "kind": "gateway",
                     "added": st.tool_store.is_added(&a.id),
+                    "default_cwd": default_cwd_for(&a.id),
                 })
             })
             .collect::<Vec<_>>(),
         Err(e) => {
+            // 网关不可达：已添加的仍下发（stale 元数据）——联系人不消失，
+            // 前端顶部横幅提示网关状态；聊天时才会真正报错。
+            let stale = st
+                .tool_store
+                .added()
+                .into_iter()
+                .map(|id| {
+                    serde_json::json!({
+                        "id": id,
+                        "name": id,
+                        "description": "",
+                        "agent_type": "",
+                        "kind": "gateway",
+                        "added": true,
+                        "default_cwd": default_cwd_for(&id),
+                    })
+                })
+                .collect::<Vec<_>>();
             return Json(serde_json::json!({
-                "tools": [],
+                "tools": stale,
                 "gateway_error": e,
             }))
-            .into_response()
+            .into_response();
         }
     };
     Json(serde_json::json!({ "tools": tools })).into_response()
@@ -288,6 +316,16 @@ async fn gateway_list_agents(
     conn.list_agents().await
 }
 
+/// `~/x` → `<home>/x`；其余原样（网关侧还有 canonicalize+home 门兜底）。
+fn expand_tilde(p: String) -> String {
+    if let Some(rest) = p.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().to_string();
+        }
+    }
+    p
+}
+
 /// 网关 agent 聊天：一次性 agent:// 连接，chunk → parse → SSE 帧，
 /// result 行收割 session_id 入台账（下轮 --resume 续接）。
 async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Response {
@@ -298,12 +336,13 @@ async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Respons
         )
             .into_response();
     };
-    // cwd：显式传入优先，默认 ~/.aginx/carrier/external/<tool_id>（自动创建）。
-    // 校验交给网关（canonicalize + home 门，adapter/mod.rs 同款）。
+    // cwd：显式传入优先（~ 展开），默认 ~/.aginx/carrier/external/<tool_id>
+    // （自动创建）。最终校验交给网关（canonicalize + home 门）。
     let default_cwd = st.kernel.config.home_dir.join("external").join(tool_id);
     let cwd = body
         .cwd
         .clone()
+        .map(expand_tilde)
         .unwrap_or_else(|| default_cwd.to_string_lossy().to_string());
     if let Some(parent_err) = std::fs::create_dir_all(&default_cwd).err() {
         return (

@@ -118,12 +118,14 @@ impl AgentEndpoint {
         let cfg: GatewayConfig = toml::from_str(&content).ok()?;
         let relay = cfg.relay?;
         let target = relay.id?;
-        let domain = relay.domain?;
+        // config 的 domain 字段是完整 relay 域名（如 "relay.aginx.net"），
+        // 与 agent:// URL 里 `.relay.` 后缀的语义不同——不另拼前缀
+        let tls_domain = relay.domain?;
         Some(Self {
-            host: format!("{target}.relay.{domain}"),
+            host: format!("{target}.{tls_domain}"),
             target,
             port: relay.port.unwrap_or(8443),
-            tls_domain: format!("relay.{domain}"),
+            tls_domain,
             relay_secret: relay.relay_secret,
         })
     }
