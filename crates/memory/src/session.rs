@@ -55,6 +55,11 @@ impl SessionTicket {
     /// 当前票据版本。
     pub const CURRENT_VERSION: u32 = 1;
 
+    /// 票据消息历史的字节预算。超出时从最老的消息对开始丢弃——更早轮次的
+    /// 语义由 `turn_summaries`（L1 摘要层）承载，票据不无限膨胀。
+    /// 256KB ≈ 数十轮普通对话；素材/产物走 materials/files 通道，不占这里。
+    pub const MAX_MESSAGES_BYTES: usize = 256 * 1024;
+
     /// 一张空票据（首轮借用）。
     pub fn empty(label: Option<String>) -> Self {
         Self {
@@ -64,6 +69,46 @@ impl SessionTicket {
             turn_summaries: Vec::new(),
             context_window_tokens: 0,
         }
+    }
+
+    /// 单条消息的粗略字节体积（wire 序列化后同量级）。
+    fn message_bytes(m: &Message) -> usize {
+        16 + match &m.content {
+            MessageContent::Text(s) => s.len(),
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text { text, .. } => text.len() + 32,
+                    _ => 64,
+                })
+                .sum(),
+        }
+    }
+
+    /// 把消息历史截到预算内：保留最新的消息，丢最老的完整 user+assistant 对
+    /// （不对半劈对话）。被丢的轮次语义已在 `turn_summaries` 里。
+    fn truncate_messages(messages: Vec<Message>, budget: usize) -> (Vec<Message>, bool) {
+        let total: usize = messages.iter().map(Self::message_bytes).sum();
+        if total <= budget {
+            return (messages, false);
+        }
+        // 找最小的偶数前缀（完整轮次），使剩余部分 ≤ 预算。奇数条开头说明
+        // 有未配对消息，一并视为可丢前缀的一部分。
+        let mut drop_end = 0usize;
+        let mut acc = 0usize;
+        for (i, m) in messages.iter().enumerate() {
+            acc += Self::message_bytes(m);
+            if i % 2 == 1 && total - acc <= budget {
+                drop_end = i + 1;
+                break;
+            }
+        }
+        if drop_end == 0 {
+            // 连单对都装不下（极端：单条消息超预算）——只留最新一条。
+            let last = messages.len().saturating_sub(2);
+            return (messages[last..].to_vec(), true);
+        }
+        (messages[drop_end..].to_vec(), true)
     }
 }
 
@@ -82,11 +127,25 @@ impl Session {
     }
 
     /// 把当前会话状态打包成票据（借用轮出口），交还用户侧持久化。
+    ///
+    /// 出口处做票据膨胀治理：消息历史截到 `MAX_MESSAGES_BYTES` 内（丢最老
+    /// 的完整轮次对），更早轮次的语义由 `turn_summaries` 承载——摘要层保留
+    /// 全量，原文层滚动窗口。
     pub fn to_ticket(&self) -> SessionTicket {
+        let (messages, truncated) =
+            SessionTicket::truncate_messages(self.messages.clone(), SessionTicket::MAX_MESSAGES_BYTES);
+        if truncated {
+            tracing::debug!(
+                agent = %self.agent_name,
+                kept = messages.len(),
+                total = self.messages.len(),
+                "ticket messages truncated to budget"
+            );
+        }
         SessionTicket {
             version: SessionTicket::CURRENT_VERSION,
             label: self.label.clone(),
-            messages: self.messages.clone(),
+            messages,
             turn_summaries: self.turn_summaries.clone(),
             context_window_tokens: self.context_window_tokens,
         }
@@ -1253,5 +1312,84 @@ mod tests {
         assert_eq!(restored.turn_summaries.len(), 1);
         assert_eq!(restored.context_window_tokens, 1234);
         assert_ne!(restored.id.0, session.id.0); // 全新 session id——服务器不记忆身份
+    }
+
+    /// 票据膨胀治理：消息历史超预算时丢最老轮次对，摘要层全量保留；
+    /// 预算内会话原样保留。
+    #[test]
+    fn test_session_ticket_truncation_budget() {
+        fn big_turn(i: usize) -> Vec<Message> {
+            vec![
+                Message::user(format!("第 {i} 轮问题：{}", "x".repeat(4096))),
+                Message::assistant(format!("第 {i} 轮回答：{}", "y".repeat(4096))),
+            ]
+        }
+
+        // 小会话（预算内）：不截断。
+        let small = Session {
+            id: SessionId::new(),
+            agent_name: "a".to_string(),
+            messages: vec![Message::user("hi"), Message::assistant("hello")],
+            turn_summaries: Vec::new(),
+            context_window_tokens: 10,
+            label: None,
+        };
+        let t = small.to_ticket();
+        assert_eq!(t.messages.len(), 2);
+
+        // 大会话：60 对 × ~8KB ≈ 490KB，超 256KB 预算 → 必须收敛。
+        let mut messages = Vec::new();
+        for i in 0..60 {
+            messages.extend(big_turn(i));
+        }
+        let summaries: Vec<TurnSummary> = (0..60)
+            .map(|i| TurnSummary {
+                turn_number: i as u32 + 1,
+                timestamp: "2026-08-23T00:00:00Z".to_string(),
+                user_intent: format!("意图{i}"),
+                assistant_outcome: format!("结果{i}"),
+                tools_used: vec![],
+                key_facts: vec![],
+            })
+            .collect();
+        let big = Session {
+            id: SessionId::new(),
+            agent_name: "a".to_string(),
+            messages,
+            turn_summaries: summaries,
+            context_window_tokens: 999_999,
+            label: None,
+        };
+        let ticket = big.to_ticket();
+
+        // 收敛上界：截断后的消息体积 ≤ 预算。
+        let kept_bytes: usize = ticket.messages.iter().map(SessionTicket::message_bytes).sum();
+        assert!(
+            kept_bytes <= SessionTicket::MAX_MESSAGES_BYTES,
+            "kept {kept_bytes} > budget {}",
+            SessionTicket::MAX_MESSAGES_BYTES
+        );
+        // 完整轮次对保留（偶数条），且保留了最新的消息。
+        assert_eq!(ticket.messages.len() % 2, 0);
+        assert!(ticket.messages.last().unwrap().content.text_content().contains("第 59 轮回答"));
+        // 摘要层全量保留——丢掉的原文语义在摘要里。
+        assert_eq!(ticket.turn_summaries.len(), 60);
+
+        // 极端：单对超预算——只留最新一对，不再膨胀。
+        let mut huge = Vec::new();
+        for i in 0..3 {
+            huge.push(Message::user(format!("u{}", "z".repeat(300_000))));
+            huge.push(Message::assistant(format!("a{i}:{}", "w".repeat(1000))));
+        }
+        let extreme = Session {
+            id: SessionId::new(),
+            agent_name: "a".to_string(),
+            messages: huge,
+            turn_summaries: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let t2 = extreme.to_ticket();
+        assert!(t2.messages.len() <= 2);
     }
 }
