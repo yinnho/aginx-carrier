@@ -2069,6 +2069,12 @@ impl CarrierKernel {
             None,
             None,
         );
+        // 失忆兜底：分身的记忆习惯先查 kv，借用轮 kv 为空是设计——没有这段
+        // 指引时模型会无视 transcript 里的完整历史，自称"失忆"要用户重发
+        // （08-23 互借 E2E 实证一次，同票据复跑即对，纯行为非接线）。
+        manifest.model.system_prompt.push_str(
+            "\n\n【借用轮须知】\n- 本轮为无状态借用：kv/记忆存储为空是设计使然（主人服务器对借用者零持久化），不是你失忆了。\n- 完整会话历史已随本轮对话消息送入（用户以会话票据带入，跨轮连续）。回答与历史相关的问题时从对话历史中查找，不要因 kv 为空就宣称不记得或要求用户重发。\n- 本轮结束一切销毁：需要跨轮记住的事实直接写进回复，回复会随会话票据回到用户侧。\n",
+        );
 
         // 3.2 素材内存级生命周期：借用者素材落 <ws>/borrow/<uuid>/materials/，
         // 仅本轮可读（走 agent 自己的 file 工具沙箱），轮末整目录销毁。
@@ -3689,13 +3695,19 @@ mod tests {
         };
         use carrier_types::message::{ContentBlock, Role, StopReason, TokenUsage};
 
-        struct EchoDriver;
+        struct EchoDriver(Arc<std::sync::Mutex<Vec<String>>>);
         #[async_trait::async_trait]
         impl LlmDriver for EchoDriver {
             async fn complete(
                 &self,
                 request: CompletionRequest,
             ) -> Result<CompletionResponse, LlmError> {
+                // 旁路捕获 system prompt——末尾断言"借用轮须知"在场。
+                // 旁路捕获 system prompt——末尾断言"借用轮须知"在场。
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(request.system.clone().unwrap_or_default());
                 let users: Vec<String> = request
                     .messages
                     .iter()
@@ -3720,7 +3732,8 @@ mod tests {
 
         let (_tmp, kernel) = boot_test_kernel();
         // boot_test_kernel 的 brain 指向不可达 URL——换成 EchoDriver。
-        install_test_driver(&kernel, EchoDriver);
+        let systems: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        install_test_driver(&kernel, EchoDriver(Arc::clone(&systems)));
 
         // run_borrowed_turn 经 registry 解析 agent——直接注册测试 entry。
         let entry = entry_with_workspace(std::path::Path::new("/tmp/nonexistent-ws"));
@@ -3768,6 +3781,30 @@ mod tests {
             borrow_rows, 0,
             "borrowed turns must not persist sessions on the host"
         );
+
+        // 失忆兜底断言：每轮 agent system prompt 都带"借用轮须知"——分身查 kv
+        // 置空会自称失忆，指引把模型拉回 transcript（历史在对话消息里）。
+        // 旁路里混有 summarizer 等内部调用（system 无此段），只断言 agent 轮
+        // （prompt 以 agent 身份开场 "You are test-agent"）。
+        let agent_sys: Vec<String> = {
+            let systems = systems.lock().unwrap();
+            systems
+                .iter()
+                .filter(|s| s.contains("You are test-agent"))
+                .cloned()
+                .collect()
+        };
+        assert!(
+            agent_sys.len() >= 2,
+            "one agent-turn prompt per borrowed turn, got {}",
+            agent_sys.len()
+        );
+        for (i, sys) in agent_sys.iter().enumerate() {
+            assert!(
+                sys.contains("借用轮须知") && sys.contains("不要因 kv 为空"),
+                "agent turn {i} system prompt misses the borrow-turn amnesia note"
+            );
+        }
     }
 
     /// 借用轮素材（第三刀 3.2）：轮中可读（driver 轮内实读素材文件）、prompt
