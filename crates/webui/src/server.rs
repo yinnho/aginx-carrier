@@ -75,6 +75,8 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/tools", get(tools_list))
         .route("/api/tools/{id}/add", post(tools_add))
         .route("/api/tools/{id}/remove", post(tools_remove))
+        // 目录选择器（第三刀补）：home 门内只读目录浏览
+        .route("/api/fs/browse", get(fs_browse))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             trust_middleware,
@@ -305,6 +307,52 @@ async fn tools_remove(
     st.tool_store.remove(&id);
     info!(agent = %id, "网关工具已移除");
     StatusCode::CREATED.into_response()
+}
+
+/// 目录选择器数据面：只列 home 内的子目录（只读、不含文件、滤 dotfile）。
+/// canonicalize 防穿越；不存在/越界一律回落 home——与网关 cwd 校验同款门。
+async fn fs_browse(Query(q): Query<FsBrowseQuery>) -> Response {
+    let Some(home) = dirs::home_dir() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "no home dir"})),
+        )
+            .into_response();
+    };
+    let requested = q
+        .path
+        .map(expand_tilde)
+        .unwrap_or_else(|| home.to_string_lossy().to_string());
+    let dir = match std::fs::canonicalize(&requested) {
+        Ok(p) if p.starts_with(&home) && p.is_dir() => p,
+        _ => home.clone(),
+    };
+    let mut entries: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| !n.starts_with('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    let parent = dir.parent().filter(|p| p.starts_with(&home)).map(|p| {
+        p.to_string_lossy()
+            .trim_end_matches('/')
+            .to_string()
+    });
+    Json(serde_json::json!({
+        "path": dir.to_string_lossy(),
+        "parent": parent,
+        "entries": entries,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct FsBrowseQuery {
+    path: Option<String>,
 }
 
 async fn gateway_list_agents(

@@ -156,6 +156,49 @@ function cwdOf(toolId) {
   return (t && t.default_cwd) || '';
 }
 
+// 目录选择器：home 门内逐级浏览（/api/fs/browse 只列目录）
+const cwdPicker = { path: '' };
+
+async function openCwdPicker() {
+  const cur = state.current;
+  if (!cur || cur.kind !== 'gateway') return;
+  await loadCwdDir(cwdOf(cur.id) || '~');
+  $('cwd-dialog').showModal();
+}
+
+async function loadCwdDir(p) {
+  let data;
+  try {
+    data = await apiGet(`/api/fs/browse?path=${encodeURIComponent(p)}`);
+  } catch (e) {
+    $('cwd-path-bar').textContent = `加载失败：${e.message}`;
+    $('cwd-list').innerHTML = '';
+    return;
+  }
+  cwdPicker.path = data.path;
+  $('cwd-path-bar').textContent = data.path;
+  const list = $('cwd-list');
+  list.innerHTML = '';
+  if (data.parent !== null && data.parent !== undefined) {
+    const up = document.createElement('div');
+    up.className = 'cwd-row-item cwd-up';
+    up.textContent = '⬆ 返回上级';
+    up.onclick = () => loadCwdDir(data.parent);
+    list.appendChild(up);
+  }
+  for (const name of data.entries || []) {
+    const el = document.createElement('div');
+    el.className = 'cwd-row-item';
+    el.textContent = `📁 ${name}`;
+    el.onclick = () =>
+      loadCwdDir(data.path === '/' ? `/${name}` : `${data.path}/${name}`);
+    list.appendChild(el);
+  }
+  if (!list.children.length) {
+    list.innerHTML = '<div class="cwd-row-item cwd-dim">（没有子目录）</div>';
+  }
+}
+
 async function selectTool(t) {
   if (state.streaming) return;
   state.current = { kind: 'gateway', id: t.id, name: t.name || t.id, emoji: '🖥' };
@@ -735,6 +778,15 @@ function wireEvents() {
     loadTools();
   };
   $('tools-back').onclick = () => showView('chat');
+  $('cwd-browse-btn').onclick = openCwdPicker;
+  $('cwd-cancel').onclick = () => $('cwd-dialog').close();
+  $('cwd-pick').onclick = () => {
+    if (!cwdPicker.path) return;
+    $('cwd-dialog').close();
+    const input = $('chat-cwd');
+    input.value = cwdPicker.path;
+    input.dispatchEvent(new Event('change')); // 复用换目录＝新会话逻辑
+  };
   $('chat-cwd').addEventListener('change', () => {
     const cur = state.current;
     if (!cur || cur.kind !== 'gateway' || state.streaming) return;
