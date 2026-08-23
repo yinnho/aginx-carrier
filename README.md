@@ -19,9 +19,15 @@ Phase 0-7a 已完成（types/memory/runtime/kernel/lifecycle/clone 全部搬运 
 `aginx-carrier acp` stdio 桥 + iLink 通道与 `aginx-carrier start` 守护形态 +
 carrier lib 化 + crates/uniffi 移动绑定）。
 **agent:// 第一刀已闭环**：本地 aginx 网关按 `~/.aginx/agents/<clone>/aginx.toml`
-拉起本桥，端到端真实 LLM 对话实测通过。**relay 段已打通**：`agc agent://<id>.relay.yinnho.cn/<clone>`
-经 relay.yinnho.cn:8443 → 网关 relay 模式 → 桥（stdin 首行嗅探双模：ACP / one-shot ask）
+拉起本桥，端到端真实 LLM 对话实测通过。**relay 段已打通**：`agc agent://<id>.relay.aginx.net/<clone>`
+经 relay.aginx.net:8443 → 网关 relay 模式 → 桥（stdin 首行嗅探双模：ACP / one-shot ask）
 → 分身流式回答，全链实测通过。
+
+**借用机制已闭环（2026-08-23，全公网 relay E2E 验收）**：`agc agent://... --ticket 会话.json
+--save-ticket 会话.json --material 素材.txt=本地路径 --files-dir ./产出`——会话票据进/出
+（主人服务器零持久化）、素材内存级用完即销毁、产物 files 回流；准入配额走
+`~/.aginx/carrier/config.toml` 的 `[borrow]` 段（enabled / allow_borrowers 名单门 /
+max_turns_per_hour 限流）；票据出口 256KB 预算滚动截断，摘要层全量承载更早轮次。
 
 下一步：桌面 aginxium 集成 / 移动 Kotlin·Swift 壳。
 
