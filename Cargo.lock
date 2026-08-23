@@ -410,6 +410,7 @@ dependencies = [
  "carrier-runtime",
  "carrier-types",
  "carrier-webhook",
+ "carrier-webui",
  "clap",
  "dirs",
  "serde",
@@ -622,6 +623,22 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "carrier-webui"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "carrier-kernel",
+ "carrier-runtime",
+ "carrier-types",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@
 
 mod acp;
 mod start;
+mod web;
 
 use clap::{Parser, Subcommand};
 
@@ -24,6 +25,12 @@ struct Cli {
 enum Command {
     /// 运行时分身守护进程（个人部署形态）
     Start,
+    /// 桌面形态：carrier 自带 Web UI，浏览器即客户端（ARCHITECTURE §11.3.1）
+    Web {
+        /// 监听地址（默认仅回环；公网暴露走 nginx 反代）
+        #[arg(long, default_value = "127.0.0.1:8703")]
+        listen: String,
+    },
     /// stdio ACP 桥：被 aginx 网关拉起，把分身暴露到 agent:// 网络
     Acp {
         /// 分身名称
@@ -86,6 +93,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Start => start::run()?,
+        Command::Web { listen } => web::run(listen)?,
         Command::Acp { clone } => acp::run(clone)?,
         Command::Info => {
             let data_dir = dirs::home_dir()

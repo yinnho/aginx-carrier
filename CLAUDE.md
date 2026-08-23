@@ -15,6 +15,7 @@
 - **配置/数据目录**：`~/.aginx/carrier/`
 - **git 历史**：纯 cp 不带历史，opencarrier 仓库是档案（历史在那里查）
 - **通道范围**：入站两条——iLink（人→agent）+ webhook（机器→agent，`carrier-webhook`，daemon `start` 专属 HTTP 监听，默认关、移动端不起）；weixin-oa/企微kf 后置
+- **桌面形态**：`aginx-carrier web`（`carrier-webui`）——carrier 自带 loopback HTTP 面 serve 内嵌 SPA，浏览器即客户端（ARCHITECTURE §11.3.1）；SSE 流式走 `send_message_streaming`，设置页写 brain.json（`update_brain`）+ `.env`
 
 ## Build & Verify Workflow
 
