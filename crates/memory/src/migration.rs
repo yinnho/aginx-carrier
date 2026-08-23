@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 32;
+const SCHEMA_VERSION: u32 = 33;
 
 /// Run all migrations to bring the database up to date.
 ///
@@ -48,6 +48,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         (30, migrate_v30),
         (31, migrate_v31),
         (32, migrate_v32),
+        (33, migrate_v33),
     ];
 
     for (version, migrate_fn) in &migrations {
@@ -1339,6 +1340,29 @@ fn migrate_v32(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT OR IGNORE INTO migrations (version, applied_at, description) VALUES (?1, datetime('now'), ?2)",
         rusqlite::params![32, "Chain resume ledger: chain_resume_state table (stall auto-resume)"],
+    )?;
+    Ok(())
+}
+
+/// v33: 用户侧票据仓库（借用机制待建清单 #5）。会话真源在用户侧——
+/// App/桌面/CLI 把借道轮返回的 SessionTicket 存在这里，下次借用取回提交。
+/// 键 = (agent_name, label)：同一分身可有多条并行对话（label 是用户侧的
+/// 对话名，如 "default" / "工作"）。ticket_json 全量存 JSON（wire 同形状，
+/// 与 ACP 直通零转换）。
+fn migrate_v33(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS borrow_tickets (
+            agent_name TEXT NOT NULL,
+            label TEXT NOT NULL,
+            ticket_json TEXT NOT NULL,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (agent_name, label)
+        );",
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO migrations (version, applied_at, description) VALUES (?1, datetime('now'), ?2)",
+        rusqlite::params![33, "User-side ticket store: borrow_tickets table (borrowing session persistence)"],
     )?;
     Ok(())
 }

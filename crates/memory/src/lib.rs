@@ -14,6 +14,7 @@ pub mod migration;
 pub mod notify_store;
 pub mod session;
 pub mod session_events;
+pub mod ticket_store;
 pub mod system_kv;
 pub mod tree;
 pub mod usage;

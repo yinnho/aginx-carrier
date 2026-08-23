@@ -46,6 +46,7 @@ pub struct MemorySubstrate {
     flow_runs: FlowRunStore,
     automation_rules: AutomationRuleStore,
     chain_resume: ChainResumeStore,
+    tickets: crate::ticket_store::TicketStore,
     content_root: PathBuf,
     /// Append-only session event log (P1-A observational bypass — see
     /// [`crate::session_events`]).
@@ -87,6 +88,7 @@ impl MemorySubstrate {
             flow_runs: FlowRunStore::new(Arc::clone(&shared)),
             automation_rules: AutomationRuleStore::new(Arc::clone(&shared)),
             chain_resume: ChainResumeStore::new(Arc::clone(&shared)),
+            tickets: crate::ticket_store::TicketStore::new(Arc::clone(&shared)),
             content_root,
             session_events: crate::session_events::SessionEventLog::new(events_root),
         })
@@ -124,6 +126,7 @@ impl MemorySubstrate {
             flow_runs: FlowRunStore::new(Arc::clone(&shared)),
             automation_rules: AutomationRuleStore::new(Arc::clone(&shared)),
             chain_resume: ChainResumeStore::new(Arc::clone(&shared)),
+            tickets: crate::ticket_store::TicketStore::new(Arc::clone(&shared)),
             content_root: PathBuf::from("/tmp/opencarrier_tree_content"),
             session_events: crate::session_events::SessionEventLog::new(events_root),
         })
@@ -164,6 +167,12 @@ impl MemorySubstrate {
     /// [`Self::cron_delivery`].
     pub fn chain_resume(&self) -> &ChainResumeStore {
         &self.chain_resume
+    }
+
+    /// Get a reference to the user-side ticket store (借用机制的会话真源在
+    /// 用户侧——App/CLI 把借道轮返回的票据存这里，下次借用取回提交)。
+    pub fn tickets(&self) -> &crate::ticket_store::TicketStore {
+        &self.tickets
     }
 
     // -----------------------------------------------------------------
