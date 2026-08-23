@@ -286,6 +286,10 @@ async fn handle_prompt(
                 return;
             }
         };
+        let active_flow = params
+            .get("activeFlow")
+            .and_then(|f| f.as_str())
+            .map(|s| s.to_string());
         handle_borrowed_prompt(
             Arc::clone(&out),
             id,
@@ -295,6 +299,7 @@ async fn handle_prompt(
             text,
             ticket_val,
             materials,
+            active_flow,
         )
         .await;
         return;
@@ -355,6 +360,7 @@ async fn handle_borrowed_prompt(
     text: String,
     ticket_val: serde_json::Value,
     materials: Vec<carrier_kernel::messaging::BorrowedMaterial>,
+    active_flow: Option<String>,
 ) {
     let ticket: SessionTicket = match serde_json::from_value(ticket_val) {
         Ok(t) => t,
@@ -365,7 +371,15 @@ async fn handle_borrowed_prompt(
     };
 
     match kernel
-        .run_borrowed_turn(agent_id, ticket, &text, None, None, &materials, None)
+        .run_borrowed_turn(
+            agent_id,
+            ticket,
+            &text,
+            None,
+            active_flow.as_deref(),
+            &materials,
+            None,
+        )
         .await
     {
         Ok(result) => {
