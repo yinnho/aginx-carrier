@@ -1,9 +1,11 @@
-//! 网关 agent 的添加台账 + 会话记忆（webui 第三刀）。
+//! 网关 agent 的添加台账 + 联系人记忆（webui 第三刀，批2 语义）。
 //!
-//! `~/.aginx/carrier/webui/external-tools.json`：added 清���（哪些网关
-//! agent 进了联系人）+ per (agent, sender, cwd) 的会话记忆（claude 真
-//! session_id 与消息历史）。换目录 = 新会话（key 含 cwd）。原子写：
-//! tmp + rename；损坏重置为空（台账丢失只是重新添加，不致命）。
+//! `~/.aginx/carrier/webui/external-tools.json`：added 清单（哪些网关
+//! agent 进了联系人）+ per (agent, sender) 的联系人记忆（claude 真
+//! session_id 与消息流水）。会话列表不再本地记——历史会话对话框透传
+//! 网关台账 sessions/list（§2.4.1）；点选某条历史 → set_active_session
+//! 把续接 id 记到联系人，下轮 prompt 回喂。原子写：tmp + rename；
+//! 损坏重置为空（台账丢失只是重新添加，不致命）。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,9 +21,11 @@ struct StoredMessage {
     ts: String,
 }
 
+/// 一个联系人的本地记忆：当前续接会话 + 消息流水。
+/// 换会话（切历史/新建）只切 session_id，流水线性追加（微信式）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct StoredSession {
-    /// agent 侧会话 id（claude result 行收割），下轮回喂续接
+struct StoredContact {
+    /// agent 侧会话 id（网关收割），下轮回喂续接；None = 下轮开新会话
     session_id: Option<String>,
     messages: Vec<StoredMessage>,
 }
@@ -30,8 +34,9 @@ struct StoredSession {
 struct StoreData {
     #[serde(default)]
     added: Vec<String>,
+    /// key = "{agent}/{sender}"
     #[serde(default)]
-    sessions: HashMap<String, StoredSession>,
+    contacts: HashMap<String, StoredContact>,
 }
 
 pub struct ToolStore {
@@ -88,47 +93,58 @@ impl ToolStore {
         }
     }
 
-    /// 移出台账并清掉该工具全部会话记忆。
+    /// 移出台账并清掉该工具全部联系人记忆。
     pub fn remove(&self, id: &str) {
         let mut data = self.data.lock().unwrap();
         data.added.retain(|a| a != id);
         let prefix = format!("{id}/");
-        data.sessions.retain(|k, _| !k.starts_with(&prefix));
+        data.contacts.retain(|k, _| !k.starts_with(&prefix));
         self.persist(&data);
     }
 
-    fn session_key(agent: &str, sender: &str, cwd: &str) -> String {
-        format!("{agent}/{sender}/{cwd}")
+    fn contact_key(agent: &str, sender: &str) -> String {
+        format!("{agent}/{sender}")
     }
 
-    /// 取会话（无则空会话）。返回 (session_id, messages)。
-    pub fn session(&self, agent: &str, sender: &str, cwd: &str) -> (Option<String>, Vec<(String, String)>) {
+    /// 取联系人记忆。返回 (当前续接 session_id, 消息流水)。
+    pub fn session(&self, agent: &str, sender: &str) -> (Option<String>, Vec<(String, String)>) {
         let data = self.data.lock().unwrap();
-        let key = Self::session_key(agent, sender, cwd);
-        data.sessions
-            .get(&key)
-            .map(|s| {
+        data.contacts
+            .get(&Self::contact_key(agent, sender))
+            .map(|c| {
                 (
-                    s.session_id.clone(),
-                    s.messages.iter().map(|m| (m.role.clone(), m.text.clone())).collect(),
+                    c.session_id.clone(),
+                    c.messages.iter().map(|m| (m.role.clone(), m.text.clone())).collect(),
                 )
             })
             .unwrap_or((None, Vec::new()))
     }
 
-    /// 追加一轮消息（user + assistant）并更新 agent 侧 session_id。
+    /// 切续接会话（历史对话框点选 / 新建）。None = 下轮开新会话。
+    pub fn set_active_session(&self, agent: &str, sender: &str, sid: Option<&str>) {
+        let mut data = self.data.lock().unwrap();
+        let entry = data
+            .contacts
+            .entry(Self::contact_key(agent, sender))
+            .or_default();
+        entry.session_id = sid.map(String::from);
+        self.persist(&data);
+    }
+
+    /// 追加一轮消息（user + assistant）并更新续接 session_id（收割到才更新）。
     pub fn append_turn(
         &self,
         agent: &str,
         sender: &str,
-        cwd: &str,
         user_text: &str,
         assistant_text: &str,
         session_id: Option<&str>,
     ) {
         let mut data = self.data.lock().unwrap();
-        let key = Self::session_key(agent, sender, cwd);
-        let entry = data.sessions.entry(key).or_default();
+        let entry = data
+            .contacts
+            .entry(Self::contact_key(agent, sender))
+            .or_default();
         let ts = chrono_like_now();
         entry.messages.push(StoredMessage {
             role: "user".into(),
@@ -145,53 +161,9 @@ impl ToolStore {
         }
         self.persist(&data);
     }
-
-    /// 列某工具在该 sender 下的全部会话（按最后消息时间倒序）。
-    /// cwd 从 key 剥前缀而来——这是"换目录=新会话"模型的会话索引面。
-    pub fn list_sessions(&self, agent: &str, sender: &str) -> Vec<SessionSummary> {
-        let data = self.data.lock().unwrap();
-        let prefix = format!("{agent}/{sender}/");
-        let mut out: Vec<SessionSummary> = data
-            .sessions
-            .iter()
-            .filter_map(|(k, s)| {
-                let cwd = k.strip_prefix(&prefix)?.to_string();
-                let last = s.messages.last()?;
-                Some(SessionSummary {
-                    cwd,
-                    session_id: s.session_id.clone(),
-                    count: s.messages.len(),
-                    last_ts: last.ts.clone(),
-                    last_text: preview(&last.text),
-                })
-            })
-            .collect();
-        out.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
-        out
-    }
 }
 
-/// 会话摘要（历史会话列表下发前端）。
-#[derive(Debug, Clone, Serialize)]
-pub struct SessionSummary {
-    pub cwd: String,
-    pub session_id: Option<String>,
-    pub count: usize,
-    pub last_ts: String,
-    pub last_text: String,
-}
-
-/// 单行预览：压掉换行，截 80 字符（chars 边界安全）。
-fn preview(text: &str) -> String {
-    let flat: String = text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
-    let mut s: String = flat.chars().take(80).collect();
-    if flat.chars().count() > 80 {
-        s.push('…');
-    }
-    s
-}
-
-/// RFC3339 UTC 时间戳（毫秒精度——会话列表按它倒序，秒级同秒会乱序）。
+/// RFC3339 UTC 时间戳（毫秒精度——同秒消息按插入序展示）。
 fn chrono_like_now() -> String {
     let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -234,22 +206,22 @@ mod tests {
         s.add("claude"); // 幂等
         assert_eq!(s.added(), vec!["claude".to_string()]);
 
-        s.append_turn("claude", "web:u1", "/tmp/a", "你好", "收到", Some("sid-1"));
-        let (sid, msgs) = s.session("claude", "web:u1", "/tmp/a");
+        s.append_turn("claude", "web:u1", "你好", "收到", Some("sid-1"));
+        let (sid, msgs) = s.session("claude", "web:u1");
         assert_eq!(sid.as_deref(), Some("sid-1"));
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0], ("user".into(), "你好".into()));
         assert_eq!(msgs[1], ("assistant".into(), "收到".into()));
 
-        // 换 cwd = 新会话（无记忆）
-        let (sid2, msgs2) = s.session("claude", "web:u1", "/tmp/b");
+        // 另一 sender 隔离
+        let (sid2, msgs2) = s.session("claude", "web:u2");
         assert_eq!(sid2, None);
         assert!(msgs2.is_empty());
 
-        // remove 清台账 + 会话
+        // remove 清台账 + 联系人
         s.remove("claude");
         assert!(!s.is_added("claude"));
-        let (sid3, _) = s.session("claude", "web:u1", "/tmp/a");
+        let (sid3, _) = s.session("claude", "web:u1");
         assert_eq!(sid3, None);
 
         // 重新 load（持久化验证）
@@ -258,16 +230,38 @@ mod tests {
     }
 
     #[test]
+    fn set_active_session_switches_resume() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store(tmp.path());
+        s.add("quanyi");
+        s.append_turn("quanyi", "web:u1", "第一句", "收到", Some("sid-a"));
+        assert_eq!(s.session("quanyi", "web:u1").0.as_deref(), Some("sid-a"));
+
+        // 历史对话框点选旧会话
+        s.set_active_session("quanyi", "web:u1", Some("sid-old"));
+        assert_eq!(s.session("quanyi", "web:u1").0.as_deref(), Some("sid-old"));
+
+        // 新建会话
+        s.set_active_session("quanyi", "web:u1", None);
+        assert_eq!(s.session("quanyi", "web:u1").0, None);
+
+        // 未收割到 id 的轮（raw 方言）不动续接 id
+        s.set_active_session("quanyi", "web:u1", Some("sid-b"));
+        s.append_turn("quanyi", "web:u1", "再问", "答", None);
+        assert_eq!(s.session("quanyi", "web:u1").0.as_deref(), Some("sid-b"));
+    }
+
+    #[test]
     fn persist_across_reload() {
         let tmp = tempfile::tempdir().unwrap();
         {
             let s = store(tmp.path());
             s.add("copilot");
-            s.append_turn("copilot", "web:u2", "/tmp/c", "q", "a", Some("sid-2"));
+            s.append_turn("copilot", "web:u2", "q", "a", Some("sid-2"));
         }
         let s2 = store(tmp.path());
         assert!(s2.is_added("copilot"));
-        let (sid, msgs) = s2.session("copilot", "web:u2", "/tmp/c");
+        let (sid, msgs) = s2.session("copilot", "web:u2");
         assert_eq!(sid.as_deref(), Some("sid-2"));
         assert_eq!(msgs.len(), 2);
     }
@@ -282,35 +276,6 @@ mod tests {
         // 仍可正常写
         s.add("claude");
         assert!(s.is_added("claude"));
-    }
-
-    #[test]
-    fn list_sessions_orders_and_scopes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let s = store(tmp.path());
-        s.append_turn("claude", "web:u1", "/tmp/b", "b1", "b答", Some("sid-b"));
-        s.append_turn("claude", "web:u1", "/tmp/a", "a1", "a答", Some("sid-a"));
-        s.append_turn("claude", "web:u2", "/tmp/c", "c1", "c答", Some("sid-c"));
-        s.append_turn("gemini", "web:u1", "/tmp/a", "g1", "g答", None);
-
-        let list = s.list_sessions("claude", "web:u1");
-        // 只含该 agent+sender 的两个会话，时间倒序（a 后写在前）
-        assert_eq!(list.len(), 2);
-        assert_eq!(list[0].cwd, "/tmp/a");
-        assert_eq!(list[0].count, 2);
-        assert_eq!(list[0].last_text, "a答");
-        assert_eq!(list[0].session_id.as_deref(), Some("sid-a"));
-        assert_eq!(list[1].cwd, "/tmp/b");
-
-        // 换行压成空格 + 超长截断
-        s.append_turn("claude", "web:u1", "/tmp/a", "x", "a\nb", None);
-        let list2 = s.list_sessions("claude", "web:u1");
-        assert_eq!(list2[0].last_text, "a b");
-        let long = "字".repeat(100);
-        s.append_turn("claude", "web:u1", "/tmp/a", "y", &long, None);
-        let list3 = s.list_sessions("claude", "web:u1");
-        assert!(list3[0].last_text.chars().count() == 81); // 80 + 省略号
-        assert!(list3[0].last_text.ends_with('…'));
     }
 
     #[test]

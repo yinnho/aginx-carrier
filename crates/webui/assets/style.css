@@ -108,52 +108,12 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 工作目录行（网关工具会话：改目录＝新会话） */
-#chat-cwd-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 20px; background: #f6f7f9; border-bottom: 1px solid var(--line);
-  font-size: 12px; color: var(--text-dim); flex: none;
-}
-#chat-cwd-row .cwd-label { flex: none; }
-#chat-cwd {
-  flex: 1; min-width: 0; padding: 4px 10px; border: 1px solid #d0d3d8; border-radius: 4px;
-  font: 12px/1.4 ui-monospace, Menlo, monospace; color: #444; outline: none; background: #fff;
-}
-#chat-cwd:focus { border-color: var(--green); }
-#chat-cwd-row .cwd-hint { flex: none; font-size: 11px; color: #9aa0a8; }
+/* 头部小按钮（历史会话） */
 .cwd-btn {
   flex: none; background: #fff; border: 1px solid var(--btn-border); border-radius: 4px;
   padding: 3px 10px; font-size: 12px; color: #333; cursor: pointer;
 }
 .cwd-btn:hover { background: #f8f8f8; }
-
-/* 目录选择对话框 */
-#cwd-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 420px; max-width: 92vw; }
-#cwd-dialog::backdrop { background: rgba(0,0,0,.3); }
-#cwd-dialog form { padding: 22px 24px; display: flex; flex-direction: column; }
-#cwd-dialog h3 { font-size: 16px; margin-bottom: 12px; }
-#cwd-path-bar {
-  font: 12px/1.4 ui-monospace, Menlo, monospace; color: #555; background: #f2f3f5;
-  border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; word-break: break-all;
-}
-#cwd-list {
-  border: 1px solid #e2e4e8; border-radius: 4px; max-height: 300px; overflow-y: auto;
-}
-.cwd-row-item {
-  padding: 7px 12px; font-size: 13px; cursor: pointer; border-bottom: 1px solid #f2f3f5;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.cwd-row-item:last-child { border-bottom: 0; }
-.cwd-row-item:hover { background: #f6f7f9; }
-.cwd-row-item.cwd-up { color: #576b95; }
-.cwd-row-item.cwd-dim { color: #9aa0a8; cursor: default; }
-#cwd-dialog .dialog-actions { margin-top: 14px; }
-
-/* 历史会话列表 */
-#sessions-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 480px; max-width: 92vw; }
-#sessions-dialog form { padding: 22px 24px; display: flex; flex-direction: column; }
-#sessions-dialog h3 { font-size: 16px; margin-bottom: 12px; }
-#sessions-list { border: 1px solid #e2e4e8; border-radius: 4px; max-height: 340px; overflow-y: auto; }
 .sess-item { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid #f2f3f5; }
 .sess-item:last-child { border-bottom: 0; }
 .sess-item:hover { background: #f6f7f9; }
@@ -161,6 +121,9 @@ body {
 .sess-cwd { font: 12.5px ui-monospace, Menlo, monospace; color: #333; word-break: break-all; }
 .sess-mark { font-size: 10px; color: var(--green); border: 1px solid var(--green); border-radius: 3px; padding: 0 4px; }
 .sess-meta { font-size: 11px; color: #9aa0a8; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 占位行（空态/网关不可达） */
+.cwd-row-item { padding: 7px 12px; font-size: 13px; cursor: default; }
+.cwd-row-item.cwd-dim { color: #9aa0a8; }
 #sessions-dialog .dialog-actions { margin-top: 14px; }
 
 /* ---------- 消息 ---------- */

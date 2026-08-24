@@ -75,8 +75,9 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/tools", get(tools_list))
         .route("/api/tools/{id}/add", post(tools_add))
         .route("/api/tools/{id}/remove", post(tools_remove))
-        // 目录选择器（第三刀补）：home 门内只读目录浏览
-        .route("/api/fs/browse", get(fs_browse))
+        // 切续接会话（历史对话框点选 / 新建）
+        .route("/api/tools/{id}/session", post(tools_set_session))
+        // 历史会话列表：透传网关台账 sessions/list（§2.4.1）
         .route("/api/tool-sessions", get(tool_sessions))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -149,8 +150,6 @@ async fn list_agents(State(st): State<Arc<WebState>>) -> Response {
 struct ChatBody {
     message: String,
     sender_id: String,
-    /// 网关 agent（第三刀）可选工作目录；分身聊天忽略
-    cwd: Option<String>,
 }
 
 async fn chat(
@@ -239,16 +238,7 @@ fn sse_frame(v: serde_json::Value) -> Event {
 /// 网关 agent 现列：listAgents 透传 + 台账标记。网关/relay 不可达时
 /// 返回空列表 + gateway_error（前端显示网关状态条，联系人不受影响）。
 async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
-    let default_cwd_for = |id: &str| {
-        st.kernel
-            .config
-            .home_dir
-            .join("external")
-            .join(id)
-            .to_string_lossy()
-            .to_string()
-    };
-    let tools = match gateway_list_agents().await {
+    let tools = match gateway_call().await {
         Ok(agents) => agents
             .into_iter()
             .map(|a| {
@@ -259,7 +249,6 @@ async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
                     "agent_type": a.agent_type,
                     "kind": "gateway",
                     "added": st.tool_store.is_added(&a.id),
-                    "default_cwd": default_cwd_for(&a.id),
                 })
             })
             .collect::<Vec<_>>(),
@@ -278,7 +267,6 @@ async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
                         "agent_type": "",
                         "kind": "gateway",
                         "added": true,
-                        "default_cwd": default_cwd_for(&id),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -310,50 +298,31 @@ async fn tools_remove(
     StatusCode::CREATED.into_response()
 }
 
-/// 目录选择器数据面：只列 home 内的子目录（只读、不含文件、滤 dotfile）。
-/// canonicalize 防穿越；不存在/越界一律回落 home——与网关 cwd 校验同款门。
-async fn fs_browse(Query(q): Query<FsBrowseQuery>) -> Response {
-    let Some(home) = dirs::home_dir() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "no home dir"})),
-        )
-            .into_response();
-    };
-    let requested = q
-        .path
-        .map(expand_tilde)
-        .unwrap_or_else(|| home.to_string_lossy().to_string());
-    let dir = match std::fs::canonicalize(&requested) {
-        Ok(p) if p.starts_with(&home) && p.is_dir() => p,
-        _ => home.clone(),
-    };
-    let mut entries: Vec<String> = std::fs::read_dir(&dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .filter_map(|e| e.file_name().into_string().ok())
-                .filter(|n| !n.starts_with('.'))
-                .collect()
-        })
-        .unwrap_or_default();
-    entries.sort();
-    let parent = dir.parent().filter(|p| p.starts_with(&home)).map(|p| {
-        p.to_string_lossy()
-            .trim_end_matches('/')
-            .to_string()
-    });
-    Json(serde_json::json!({
-        "path": dir.to_string_lossy(),
-        "parent": parent,
-        "entries": entries,
-    }))
-    .into_response()
+#[derive(Deserialize)]
+struct SetSessionBody {
+    sender_id: String,
+    /// 点选的历史会话 id；null = 新建会话（下轮不带 --resume）
+    session_id: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct FsBrowseQuery {
-    path: Option<String>,
+async fn tools_set_session(
+    State(st): State<Arc<WebState>>,
+    AxumPath(id): AxumPath<String>,
+    Json(body): Json<SetSessionBody>,
+) -> Response {
+    if let Some(ref sid) = body.session_id {
+        if !crate::agent_client::valid_session_id(sid) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid sessionId"})),
+            )
+                .into_response();
+        }
+    }
+    let sender_id = format!("web:{}", body.sender_id);
+    st.tool_store
+        .set_active_session(&id, &sender_id, body.session_id.as_deref());
+    Json(serde_json::json!({"status": "ok"})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -362,38 +331,55 @@ struct ToolSessionsQuery {
     sender: String,
 }
 
-/// 历史会话列表（网关工具第三刀）：该工具在此 sender 下的全部会话
-/// （cwd = 会话身份），按最后消息时间倒序——"换目录=新会话"模型的索引面。
+/// 历史会话列表：透传网关台账 sessions/list（§2.4.1——网关经手的轮按
+/// 注册名记账），同时下发该联系人当前续接 id（前端标"当前"）。
+/// 网关不可达时 200 + 空表 + gateway_error（对话框里提示，不炸）。
 async fn tool_sessions(
     State(st): State<Arc<WebState>>,
     Query(q): Query<ToolSessionsQuery>,
 ) -> Response {
     let sender_id = format!("web:{}", q.sender);
-    let sessions = st.tool_store.list_sessions(&q.agent, &sender_id);
-    Json(serde_json::json!({ "sessions": sessions })).into_response()
+    let active = st.tool_store.session(&q.agent, &sender_id).0;
+    match gateway_sessions(&q.agent).await {
+        Ok(sessions) => Json(serde_json::json!({
+            "sessions": sessions,
+            "active_session_id": active,
+        }))
+        .into_response(),
+        Err(e) => Json(serde_json::json!({
+            "sessions": [],
+            "active_session_id": active,
+            "gateway_error": e,
+        }))
+        .into_response(),
+    }
 }
 
-async fn gateway_list_agents(
-) -> Result<Vec<crate::agent_client::GatewayAgent>, String> {
+/// 网关 RPC 短连接（listAgents / sessions/list 共用面）。
+async fn gateway_connect(
+) -> Result<crate::agent_client::AgentConn, String> {
     let ep = crate::agent_client::AgentEndpoint::from_gateway_config()
         .ok_or_else(|| "本机网关未配置（~/.aginx/config.toml [relay] 段缺失）".to_string())?;
     let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
     conn.initialize().await?;
+    Ok(conn)
+}
+
+async fn gateway_call() -> Result<Vec<crate::agent_client::GatewayAgent>, String> {
+    let mut conn = gateway_connect().await?;
     conn.list_agents().await
 }
 
-/// `~/x` → `<home>/x`；其余原样（网关侧还有 canonicalize+home 门兜底）。
-fn expand_tilde(p: String) -> String {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().to_string();
-        }
-    }
-    p
+async fn gateway_sessions(
+    agent: &str,
+) -> Result<Vec<crate::agent_client::GatewaySession>, String> {
+    let mut conn = gateway_connect().await?;
+    conn.sessions_list(agent).await
 }
 
-/// 网关 agent 聊天：一次性 agent:// 连接，chunk → parse → SSE 帧，
-/// result 行收割 session_id 入台账（下轮 --resume 续接）。
+/// 网关 agent 聊天：一次性 agent:// 连接，纯文本 chunk → SSE delta 帧，
+/// 终帧收割 session_id 入台账（下轮 --resume 续接）。cwd 不再传——
+/// 注册项绑定的 folder 就是会话锚定点（网关 spawn 落点）。
 async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Response {
     let Some(ep) = crate::agent_client::AgentEndpoint::from_gateway_config() else {
         return (
@@ -402,23 +388,8 @@ async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Respons
         )
             .into_response();
     };
-    // cwd：显式传入优先（~ 展开），默认 ~/.aginx/carrier/external/<tool_id>
-    // （自动创建）。最终校验交给网关（canonicalize + home 门）。
-    let default_cwd = st.kernel.config.home_dir.join("external").join(tool_id);
-    let cwd = body
-        .cwd
-        .clone()
-        .map(expand_tilde)
-        .unwrap_or_else(|| default_cwd.to_string_lossy().to_string());
-    if let Some(parent_err) = std::fs::create_dir_all(&default_cwd).err() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("工作目录创建失败: {parent_err}")})),
-        )
-            .into_response();
-    }
     let sender_id = format!("web:{}", body.sender_id);
-    let (resume_id, _) = st.tool_store.session(tool_id, &sender_id, &cwd);
+    let (resume_id, _) = st.tool_store.session(tool_id, &sender_id);
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(64);
     let tool_id = tool_id.to_string();
@@ -433,27 +404,10 @@ async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Respons
                 .await
                 .map_err(|e| format!("网关连接失败: {e}"))?;
             conn.initialize().await?;
-            conn.prompt(
-                &tool_id,
-                &message,
-                Some(&cwd),
-                resume_id.as_deref(),
-                |item| match item {
-                    crate::agent_client::StreamItem::Delta(t) => {
-                        send(serde_json::json!({"type": "delta", "text": t}));
-                        true
-                    }
-                    crate::agent_client::StreamItem::Thinking(t) => {
-                        send(serde_json::json!({"type": "thinking", "text": t}));
-                        true
-                    }
-                    crate::agent_client::StreamItem::Tool(name) => {
-                        send(serde_json::json!({"type": "tool", "name": name, "preview": "", "is_error": false}));
-                        true
-                    }
-                    _ => true,
-                },
-            )
+            conn.prompt(&tool_id, &message, resume_id.as_deref(), |text| {
+                send(serde_json::json!({"type": "delta", "text": text}));
+                true
+            })
             .await
         }
         .await;
@@ -463,7 +417,6 @@ async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Respons
                 store.append_turn(
                     &tool_id,
                     &sender_id,
-                    &cwd,
                     &message,
                     &result.text,
                     result.session_id.as_deref(),
@@ -497,8 +450,6 @@ fn kernel_self_handle(kernel: &Arc<CarrierKernel>) -> Arc<dyn carrier_runtime::k
 struct HistoryQuery {
     agent: String,
     sender: String,
-    /// 网关 agent（第三刀）会话目录（换目录=新会话）
-    cwd: Option<String>,
 }
 
 async fn history(State(st): State<Arc<WebState>>, Query(q): Query<HistoryQuery>) -> Response {
@@ -506,16 +457,7 @@ async fn history(State(st): State<Arc<WebState>>, Query(q): Query<HistoryQuery>)
     if st.kernel.registry.find_by_name(&q.agent).is_none() {
         if st.tool_store.is_added(&q.agent) {
             let sender_id = format!("web:{}", q.sender);
-            let cwd = q.cwd.unwrap_or_else(|| {
-                st.kernel
-                    .config
-                    .home_dir
-                    .join("external")
-                    .join(&q.agent)
-                    .to_string_lossy()
-                    .to_string()
-            });
-            let (_, messages) = st.tool_store.session(&q.agent, &sender_id, &cwd);
+            let (_, messages) = st.tool_store.session(&q.agent, &sender_id);
             let messages = messages
                 .into_iter()
                 .map(|(role, text)| serde_json::json!({"role": role, "text": text}))

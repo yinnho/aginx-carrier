@@ -9,11 +9,10 @@ const state = {
   history: new Map(), // agent name -> [{role:'user'|'agent', text}]
   streaming: false,
   brain: null,
-  view: 'chat', // 'chat' | 'market' | 'detail'
+  view: 'chat', // 'chat' | 'market' | 'detail' | 'tools'
   market: { q: '', page: 1, templates: [], hasMore: false, keyOk: true, hubEnv: '', hubUrl: '' },
   installing: false,
   tools: [], // 网关 agent（/api/tools）；网关不可达时只含已添加的 stale 项
-  cwdByTool: JSON.parse(localStorage.getItem('aginx_cwds') || '{}'), // 工具 id -> 工作目录（持久化；空=默认；换目录＝新会话）
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -122,20 +121,20 @@ async function selectAgent(a) {
   $('chat-avatar').textContent = a.emoji || (a.display_name || a.name).slice(0, 1);
   $('chat-name').textContent = a.display_name || a.name;
   $('chat-sub').textContent = `${a.name} · ${a.model || '?'} · ${a.state === 'Running' ? '在线' : '离线'}`;
-  $('chat-cwd-row').classList.add('hidden');
+  $('sessions-btn').classList.add('hidden');
   setStatus('', false);
   await applyHistory(a.name);
   scrollChat();
   $('msg-input').focus();
 }
 
-/// 拉取并渲染一个联系人的历史（分身按 name，网关工具按 id + cwd）。
-async function applyHistory(key, cwd) {
+/// 拉取并渲染一个联系人的历史（分身按 name，网关工具按 id——本地流水，
+/// 会话列表另走网关台账）。
+async function applyHistory(key) {
   $('chat-body').innerHTML = '';
   state.history.delete(key);
   try {
-    let url = `/api/history?agent=${encodeURIComponent(key)}&sender=${encodeURIComponent(state.senderId)}`;
-    if (cwd) url += `&cwd=${encodeURIComponent(cwd)}`;
+    const url = `/api/history?agent=${encodeURIComponent(key)}&sender=${encodeURIComponent(state.senderId)}`;
     const data = await apiGet(url);
     const msgs = (data.messages || []).map((m) => ({
       role: m.role === 'user' ? 'user' : 'agent',
@@ -148,58 +147,8 @@ async function applyHistory(key, cwd) {
   }
 }
 
-// ---------- 网关工具会话（第三刀：agent:// 经网关路由 CLI） ----------
+// ---------- 网关工具会话（第三刀批2：历史=网关台账，续接=回喂 sessionId） ----------
 
-function cwdOf(toolId) {
-  if (state.cwdByTool[toolId] !== undefined) return state.cwdByTool[toolId];
-  const t = state.tools.find((x) => x.id === toolId);
-  return (t && t.default_cwd) || '';
-}
-
-// 目录选择器：home 门内逐级浏览（/api/fs/browse 只列目录）
-const cwdPicker = { path: '' };
-
-async function openCwdPicker() {
-  const cur = state.current;
-  if (!cur || cur.kind !== 'gateway') return;
-  await loadCwdDir(cwdOf(cur.id) || '~');
-  $('cwd-dialog').showModal();
-}
-
-async function loadCwdDir(p) {
-  let data;
-  try {
-    data = await apiGet(`/api/fs/browse?path=${encodeURIComponent(p)}`);
-  } catch (e) {
-    $('cwd-path-bar').textContent = `加载失败：${e.message}`;
-    $('cwd-list').innerHTML = '';
-    return;
-  }
-  cwdPicker.path = data.path;
-  $('cwd-path-bar').textContent = data.path;
-  const list = $('cwd-list');
-  list.innerHTML = '';
-  if (data.parent !== null && data.parent !== undefined) {
-    const up = document.createElement('div');
-    up.className = 'cwd-row-item cwd-up';
-    up.textContent = '⬆ 返回上级';
-    up.onclick = () => loadCwdDir(data.parent);
-    list.appendChild(up);
-  }
-  for (const name of data.entries || []) {
-    const el = document.createElement('div');
-    el.className = 'cwd-row-item';
-    el.textContent = `📁 ${name}`;
-    el.onclick = () =>
-      loadCwdDir(data.path === '/' ? `/${name}` : `${data.path}/${name}`);
-    list.appendChild(el);
-  }
-  if (!list.children.length) {
-    list.innerHTML = '<div class="cwd-row-item cwd-dim">（没有子目录）</div>';
-  }
-}
-
-// 历史会话：store 按 cwd 记账的全部会话，点击切回对应目录（＝切回会话）
 async function openSessions() {
   const cur = state.current;
   if (!cur || cur.kind !== 'gateway') return;
@@ -219,25 +168,56 @@ async function renderSessions() {
     list.innerHTML = `<div class="cwd-row-item cwd-dim">加载失败：${escapeHtml(e.message)}</div>`;
     return;
   }
-  const curCwd = cwdOf(cur.id);
+  const active = data.active_session_id || '';
   list.innerHTML = '';
+  if (data.gateway_error) {
+    list.innerHTML = `<div class="cwd-row-item cwd-dim">网关不可达：${escapeHtml(data.gateway_error)}</div>`;
+    return;
+  }
   for (const s of data.sessions || []) {
     const el = document.createElement('div');
-    el.className = 'sess-item' + (s.cwd === curCwd ? ' sess-current' : '');
-    const time = (s.last_ts || '').slice(0, 19).replace('T', ' ');
+    el.className = 'sess-item' + (s.sessionId === active ? ' sess-current' : '');
+    const time = (s.lastTs || '').slice(0, 19).replace('T', ' ');
     el.innerHTML =
-      `<div class="sess-cwd">📁 ${escapeHtml(s.cwd)}${s.cwd === curCwd ? ' <span class="sess-mark">当前</span>' : ''}</div>` +
-      `<div class="sess-meta">${s.count} 条 · ${escapeHtml(time)} · ${escapeHtml(s.last_text || '')}</div>`;
-    el.onclick = () => {
-      $('sessions-dialog').close();
-      const input = $('chat-cwd');
-      input.value = s.cwd;
-      input.dispatchEvent(new Event('change')); // 复用换目录逻辑（持久化+拉历史）
-    };
+      `<div class="sess-cwd">${escapeHtml(s.title || s.sessionId)}${s.sessionId === active ? ' <span class="sess-mark">当前</span>' : ''}</div>` +
+      `<div class="sess-meta">${s.turns ?? '?'} 轮 · ${escapeHtml(time)}</div>`;
+    el.onclick = () => pickSession(s.sessionId);
     list.appendChild(el);
   }
   if (!list.children.length) {
     list.innerHTML = '<div class="cwd-row-item cwd-dim">（还没有历史会话——发过消息就会出现在这里）</div>';
+  }
+}
+
+// 点选历史会话 → 通知后端切续接 id，下一轮 prompt 回喂该 id
+async function pickSession(sessionId) {
+  const cur = state.current;
+  if (!cur || cur.kind !== 'gateway' || !sessionId) return;
+  try {
+    await apiSend(`/api/tools/${encodeURIComponent(cur.id)}/session`, 'POST', {
+      sender_id: state.senderId,
+      session_id: sessionId,
+    });
+    $('sessions-dialog').close();
+    setStatus('已切到该会话，下一轮续接它', false);
+  } catch (e) {
+    alert(`切换失败：${e.message}`);
+  }
+}
+
+// 新会话：清续接 id，下一轮不带 --resume 从头开
+async function newSession() {
+  const cur = state.current;
+  if (!cur || cur.kind !== 'gateway') return;
+  try {
+    await apiSend(`/api/tools/${encodeURIComponent(cur.id)}/session`, 'POST', {
+      sender_id: state.senderId,
+      session_id: null,
+    });
+    $('sessions-dialog').close();
+    setStatus('新会话已就绪，下一轮从头开始', false);
+  } catch (e) {
+    alert(`新建失败：${e.message}`);
   }
 }
 
@@ -250,10 +230,9 @@ async function selectTool(t) {
   $('chat-avatar').textContent = '🖥';
   $('chat-name').textContent = t.name || t.id;
   $('chat-sub').textContent = `网关 · ${t.agent_type || 'agent'} · ${t.id}`;
-  $('chat-cwd-row').classList.remove('hidden');
-  $('chat-cwd').value = cwdOf(t.id);
+  $('sessions-btn').classList.remove('hidden');
   setStatus('', false);
-  await applyHistory(t.id, cwdOf(t.id) || undefined);
+  await applyHistory(t.id);
   scrollChat();
   $('msg-input').focus();
 }
@@ -325,7 +304,6 @@ async function sendMessage() {
   const agent = state.current;
   const isTool = agent.kind === 'gateway';
   const key = isTool ? agent.id : agent.name; // 网关工具按 id 路由，分身按 name
-  const cwd = isTool ? cwdOf(agent.id) : '';
 
   pushHist(key, { role: 'user', text });
   appendBubble('user', text);
@@ -341,7 +319,7 @@ async function sendMessage() {
     const resp = await fetch(`/api/chat/${encodeURIComponent(key)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, sender_id: state.senderId, ...(cwd ? { cwd } : {}) }),
+      body: JSON.stringify({ message: text, sender_id: state.senderId }),
     });
     if (!resp.ok || !resp.body) {
       const t = await resp.text().catch(() => '');
@@ -771,7 +749,7 @@ function renderTools() {
       `${t.added ? '<span class="mkt-badge ok">已添加</span>' : ''}</div>` +
       `<div class="mkt-card-desc">${escapeHtml((t.description || '').slice(0, 90) || '（无描述）')}</div>` +
       `<div class="mkt-card-meta"><span class="mkt-card-id">${escapeHtml(t.id)}</span>` +
-      `<span>· 默认目录 ${escapeHtml(t.default_cwd || '')}</span></div>`;
+      `<span>· 聊天经网关路由到对应 CLI</span></div>`;
     const btn = document.createElement('button');
     btn.className = t.added ? 'btn-ghost' : 'btn-primary';
     btn.textContent = t.added ? '移除（清会话）' : '添加到联系人';
@@ -820,28 +798,11 @@ function wireEvents() {
     loadTools();
   };
   $('tools-back').onclick = () => showView('chat');
-  $('cwd-browse-btn').onclick = openCwdPicker;
-  $('cwd-cancel').onclick = () => $('cwd-dialog').close();
-  $('cwd-pick').onclick = () => {
-    if (!cwdPicker.path) return;
-    $('cwd-dialog').close();
-    const input = $('chat-cwd');
-    input.value = cwdPicker.path;
-    input.dispatchEvent(new Event('change')); // 复用换目录＝新会话逻辑
-  };
-  $('chat-cwd').addEventListener('change', () => {
-    const cur = state.current;
-    if (!cur || cur.kind !== 'gateway' || state.streaming) return;
-    const v = $('chat-cwd').value.trim();
-    if (v === cwdOf(cur.id)) return;
-    state.cwdByTool[cur.id] = v;
-    localStorage.setItem('aginx_cwds', JSON.stringify(state.cwdByTool));
-    applyHistory(cur.id, v || undefined); // 换目录＝新会话
-  });
 
-  // 历史会话列表：该工具全部 cwd 会话，点击切回
-  $('cwd-history-btn').onclick = openSessions;
+  // 历史会话（网关台账）：点选续接 / 新建
+  $('sessions-btn').onclick = openSessions;
   $('sessions-close').onclick = () => $('sessions-dialog').close();
+  $('sessions-new').onclick = newSession;
 
   // 装分身页
   $('market-btn').onclick = () => {

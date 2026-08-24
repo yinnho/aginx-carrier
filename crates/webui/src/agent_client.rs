@@ -2,12 +2,15 @@
 //!
 //! agc（CLI）之后生态的第二个协议客户端，以库形态内嵌于 webui。
 //! 连接一次性：TLS 连 relay → `connect` 握手（按 target 路由到网关）→
-//! `initialize` → `prompt`（chunk 流式）。协议形状逐字对齐 agc/src/main.rs。
+//! `initialize` → `prompt`（chunk 流式）/ `sessions/list`。协议形状逐字对齐
+//! agc/src/main.rs。
 //!
-//! 会话续接的关键分工：网关只回显入参 sessionId，真会话 id 在 agent 的
-//! 输出流里（claude `--output-format stream-json` 的 result 行）。本客户端
-//! 从 chunk 流收割之，调用方存盘、下轮回喂 `prompt.sessionId` → 网关拼
-//! `--resume`（aginx.toml `[session] resume_args` 模板）。
+//! 会话续接（批2 语义）：网关翻译器（ACP.md §2.5/§2.6）把 CLI 方言翻成
+//! 纯文本 chunk，并从 agent 输出收割真会话 id——最终 result 帧带
+//! `sessionId`/`costUsd`/`durationMs`/`numTurns`。本客户端只管把
+//! sessionId 存盘、下轮回喂 `prompt.sessionId` → 网关拼 `--resume`
+//!（aginx.toml `[session] resume_args` 模板）。历史会话列表来自网关
+//! 台账 `sessions/list`（§2.4.1），不再解析 agent 私有输出方言。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -48,30 +51,29 @@ pub struct GatewayAgent {
     pub agent_type: String,
 }
 
-/// prompt 一轮的收尾事实（来自 agent 输出流的 result 行）。
+/// 网关台账会话条目（sessions/list 结果，§2.4.1）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySession {
+    pub session_id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub last_ts: String,
+    #[serde(default)]
+    pub turns: u64,
+}
+
+/// prompt 一轮的收尾事实（来自最终 result 帧——网关收割字段）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentPromptResult {
+    /// 本轮全部纯文本 chunk 拼接
     pub text: String,
+    /// agent 真会话 id（收割，下轮续接用）
     pub session_id: Option<String>,
-    pub is_error: bool,
     pub cost_usd: Option<f64>,
     pub duration_ms: Option<u64>,
     pub num_turns: Option<u64>,
-}
-
-/// chunk 流里一行 agent 输出的归类（纯函数，单测金样本在此）。
-#[derive(Debug, Clone, PartialEq)]
-pub enum StreamItem {
-    /// 助手可见文本（claude assistant 消息的 text 块，整块粒度）
-    Delta(String),
-    /// 思考过程（thinking 块）
-    Thinking(String),
-    /// 工具调用（工具名，如 "Write"）
-    Tool(String),
-    /// result 收尾行
-    Result(AgentPromptResult),
-    /// 其余（system/user/tool_result/无法解析的行）
-    Ignore,
 }
 
 impl AgentEndpoint {
@@ -140,81 +142,19 @@ pub fn valid_session_id(sid: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// 解析 claude `--output-format stream-json` 的一行输出。
-/// 容错优先：任何认不出的行一律 Ignore，整个会话没有 result 行时
-/// 调用方把全部 Delta 拼接当纯文本（其他 CLI 直通形态）。
-pub fn parse_stream_line(line: &str) -> StreamItem {
-    let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return StreamItem::Ignore;
-    };
-    match v.get("type").and_then(|t| t.as_str()) {
-        Some("assistant") => {
-            // 一条 assistant 消息含多块。全部扫完再决定：有 text 块 → Delta
-            //（多块拼接）；否则首个非空 thinking → Thinking；否则首个
-            // tool_use 名 → Tool（工具事件通常伴随独立消息，这里降级兜底）。
-            let blocks = v
-                .pointer("/message/content")
-                .and_then(|c| c.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let mut texts = Vec::new();
-            let mut thinking: Option<String> = None;
-            let mut tool: Option<String> = None;
-            for b in &blocks {
-                match b.get("type").and_then(|t| t.as_str()) {
-                    Some("text") => {
-                        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
-                            if !t.is_empty() {
-                                texts.push(t.to_string());
-                            }
-                        }
-                    }
-                    Some("thinking") => {
-                        if thinking.is_none() {
-                            if let Some(t) = b.get("thinking").and_then(|t| t.as_str()) {
-                                if !t.is_empty() {
-                                    thinking = Some(t.to_string());
-                                }
-                            }
-                        }
-                    }
-                    Some("tool_use") => {
-                        if tool.is_none() {
-                            if let Some(n) = b.get("name").and_then(|n| n.as_str()) {
-                                tool = Some(n.to_string());
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if !texts.is_empty() {
-                StreamItem::Delta(texts.join("\n"))
-            } else if let Some(t) = thinking {
-                StreamItem::Thinking(t)
-            } else if let Some(n) = tool {
-                StreamItem::Tool(n)
-            } else {
-                StreamItem::Ignore
-            }
-        }
-        Some("result") => StreamItem::Result(AgentPromptResult {
-            text: v
-                .get("result")
-                .and_then(|t| t.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            session_id: v
-                .get("session_id")
-                .and_then(|s| s.as_str())
-                .filter(|s| valid_session_id(s))
-                .map(String::from),
-            is_error: v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false),
-            cost_usd: v.get("total_cost_usd").and_then(|c| c.as_f64()),
-            duration_ms: v.get("duration_ms").and_then(|d| d.as_u64()),
-            num_turns: v.get("num_turns").and_then(|n| n.as_u64()),
-        }),
-        _ => StreamItem::Ignore,
+/// 从最终 result 帧收割收尾事实（纯函数，金样本在此）。
+/// `text` 是本轮 chunk 拼接（最终帧不带全文）。
+fn harvest_final(result: &Value, text: String) -> AgentPromptResult {
+    AgentPromptResult {
+        text,
+        session_id: result
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .filter(|s| valid_session_id(s))
+            .map(String::from),
+        cost_usd: result.get("costUsd").and_then(|c| c.as_f64()),
+        duration_ms: result.get("durationMs").and_then(|d| d.as_u64()),
+        num_turns: result.get("numTurns").and_then(|n| n.as_u64()),
     }
 }
 
@@ -327,47 +267,48 @@ impl AgentConn {
         id
     }
 
-    /// 协议握手。public 网关无需 authToken。
-    pub async fn initialize(&mut self) -> Result<(), String> {
+    /// 通用 RPC：发请求 → 等同 id 响应。error 帧 → Err(message)。
+    async fn rpc(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.alloc_id();
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "0.1.0",
-                "clientInfo": {"name": "aginx-carrier-webui", "version": "0.1.0"}
-            }
+            "method": method,
+            "params": params,
         }))
         .await?;
-        let resp = self.recv_timeout(RPC_TIMEOUT).await?;
-        if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
-            return Err(err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("initialize 失败")
-                .to_string());
+        loop {
+            let resp = self.recv_timeout(RPC_TIMEOUT).await?;
+            if resp.get("id").and_then(|v| v.as_i64()) != Some(id) {
+                continue; // 乱序帧（chunk 等），等本请求的响应
+            }
+            if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+                return Err(err
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or(method)
+                    .to_string());
+            }
+            return Ok(resp);
         }
-        Ok(())
+    }
+
+    /// 协议握手。public 网关无需 authToken。
+    pub async fn initialize(&mut self) -> Result<(), String> {
+        self.rpc(
+            "initialize",
+            json!({
+                "protocolVersion": "0.1.0",
+                "clientInfo": {"name": "aginx-carrier-webui", "version": "0.1.0"}
+            }),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// 网关已注册 agent 列表。
     pub async fn list_agents(&mut self) -> Result<Vec<GatewayAgent>, String> {
-        let id = self.alloc_id();
-        self.send(&json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "listAgents",
-        }))
-        .await?;
-        let resp = self.recv_timeout(RPC_TIMEOUT).await?;
-        if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
-            return Err(err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("listAgents 失败")
-                .to_string());
-        }
+        let resp = self.rpc("listAgents", json!({})).await?;
         let agents = resp
             .pointer("/result/agents")
             .cloned()
@@ -376,28 +317,34 @@ impl AgentConn {
         serde_json::from_value(agents).map_err(|e| format!("agents 解析失败: {e}"))
     }
 
-    /// 发一轮 prompt，chunk 流经 `on_item` 转发（返回 false = 客户端断开，
-    /// 停止转发并尽快结束）。收尾返回 result 行事实；整个流没有 result 行
-    /// 时（非 claude CLI 直通形态）返回 Delta 拼接的纯文本。
+    /// 网关台账会话列表（§2.4.1：网关经手的轮按注册名记账）。
+    pub async fn sessions_list(&mut self, agent: &str) -> Result<Vec<GatewaySession>, String> {
+        let resp = self.rpc("sessions/list", json!({"agent": agent})).await?;
+        let sessions = resp
+            .pointer("/result/sessions")
+            .cloned()
+            .unwrap_or(Value::Null);
+        serde_json::from_value(sessions).map_err(|e| format!("sessions 解析失败: {e}"))
+    }
+
+    /// 发一轮 prompt。chunk 已是网关翻译后的纯文本，经 `on_chunk` 转发
+    ///（返回 false = 客户端断开，停止转发）。终帧（result.stopReason，
+    /// 无 id——ack 被吞铁则吃掉）收割 sessionId/成本三件套。
     pub async fn prompt<F>(
         &mut self,
         agent: &str,
         message: &str,
-        cwd: Option<&str>,
         session_id: Option<&str>,
-        mut on_item: F,
+        mut on_chunk: F,
     ) -> Result<AgentPromptResult, String>
     where
-        F: FnMut(&StreamItem) -> bool,
+        F: FnMut(&str) -> bool,
     {
-        let id = self.alloc_id();
         let mut params = json!({"agent": agent, "message": message});
-        if let Some(cwd) = cwd {
-            params["cwd"] = json!(cwd);
-        }
         if let Some(sid) = session_id {
             params["sessionId"] = json!(sid);
         }
+        let id = self.alloc_id();
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -407,7 +354,6 @@ impl AgentConn {
         .await?;
 
         let mut deltas: Vec<String> = Vec::new();
-        let mut result: Option<AgentPromptResult> = None;
         loop {
             // idle watchdog：单次等待上限，不做整轮墙钟（长任务合法）
             let resp = tokio::time::timeout(IDLE_TIMEOUT, self.recv())
@@ -422,41 +368,20 @@ impl AgentConn {
                 return Err(msg.to_string());
             }
 
-            // 终帧：result 带 stopReason，或回显我们的请求 id
-            let is_final = resp
-                .pointer("/result/stopReason")
-                .is_some()
-                || resp.get("id").and_then(|v| v.as_i64()) == Some(id);
-            if is_final {
-                return Ok(result.unwrap_or_else(|| AgentPromptResult {
-                    text: deltas.join(""),
-                    ..Default::default()
-                }));
+            // 终帧：result 带 stopReason 且无 id（外部协议 §2.5）
+            if resp.pointer("/result/stopReason").is_some() {
+                let text = deltas.concat();
+                let result = resp.get("result").cloned().unwrap_or(Value::Null);
+                return Ok(harvest_final(&result, text));
             }
 
-            // chunk 通知：params.text = agent stdout 的一行
+            // chunk 通知：params.text = 网关翻译后的纯文本段
             if resp.get("method").and_then(|m| m.as_str()) == Some("chunk") {
-                let tagged = resp.get("id").and_then(|v| v.as_i64());
-                if tagged.is_none() || tagged == Some(id) {
-                    if let Some(text) = resp.pointer("/params/text").and_then(|t| t.as_str()) {
-                        match parse_stream_line(text) {
-                            StreamItem::Delta(t) => {
-                                deltas.push(t.clone());
-                                if !on_item(&StreamItem::Delta(t)) {
-                                    return Err("客户端断开".to_string());
-                                }
-                            }
-                            item @ (StreamItem::Thinking(_) | StreamItem::Tool(_)) => {
-                                if !on_item(&item) {
-                                    return Err("客户端断开".to_string());
-                                }
-                            }
-                            StreamItem::Result(r) => {
-                                result = Some(r);
-                            }
-                            StreamItem::Ignore => {}
-                        }
+                if let Some(text) = resp.pointer("/params/text").and_then(|t| t.as_str()) {
+                    if !on_chunk(text) {
+                        return Err("客户端断开".to_string());
                     }
+                    deltas.push(text.to_string());
                 }
             }
         }
@@ -529,78 +454,32 @@ relay_secret = "s3cret"
         assert_eq!(relay.relay_secret.as_deref(), Some("s3cret"));
     }
 
-    // ── parse_stream_line ──
+    // ── 终帧收割（§2.5 翻译轮最终结果） ──
 
     #[test]
-    fn stream_assistant_text_block() {
-        let line = r#"{"type":"assistant","message":{"content":[{"text":"收到","type":"text"}],"id":"msg_1","role":"assistant"},"session_id":"abc"}"#;
-        assert_eq!(parse_stream_line(line), StreamItem::Delta("收到".into()));
-    }
-
-    #[test]
-    fn stream_assistant_multi_text_blocks_joined() {
-        let line = r#"{"type":"assistant","message":{"content":[{"text":"第一段","type":"text"},{"text":"第二段","type":"text"}]}}"#;
+    fn final_frame_harvests_session_and_costs() {
+        // 金样本 = 网关外部协议 §2.5（external_final_result_translated）
+        let result: Value = serde_json::from_str(
+            r#"{"stopReason": "endTurn", "sessionId": "b8f713a4-ea3b-4d6c-920b-87dc2a0403f0", "costUsd": 0.015, "durationMs": 8400, "numTurns": 1}"#,
+        )
+        .unwrap();
+        let r = harvest_final(&result, "已记".into());
+        assert_eq!(r.text, "已记");
         assert_eq!(
-            parse_stream_line(line),
-            StreamItem::Delta("第一段\n第二段".into())
+            r.session_id.as_deref(),
+            Some("b8f713a4-ea3b-4d6c-920b-87dc2a0403f0")
         );
+        assert_eq!(r.cost_usd, Some(0.015));
+        assert_eq!(r.duration_ms, Some(8400));
+        assert_eq!(r.num_turns, Some(1));
     }
 
     #[test]
-    fn stream_assistant_thinking_block() {
-        let line = r#"{"type":"assistant","message":{"content":[{"thinking":"让我想想","type":"thinking"}]}}"#;
-        assert_eq!(parse_stream_line(line), StreamItem::Thinking("让我想想".into()));
-    }
-
-    #[test]
-    fn stream_assistant_tool_use_block() {
-        let line = r#"{"type":"assistant","message":{"content":[{"input":{"file_path":"/x"},"name":"Write","type":"tool_use"}]}}"#;
-        assert_eq!(parse_stream_line(line), StreamItem::Tool("Write".into()));
-    }
-
-    #[test]
-    fn stream_assistant_mixed_blocks_prefers_text() {
-        // text + tool_use 同一条消息：文本优先（工具事件下一条消息还会来）
-        let line = r#"{"type":"assistant","message":{"content":[{"thinking":"想","type":"thinking"},{"text":"结论","type":"text"}]}}"#;
-        assert_eq!(parse_stream_line(line), StreamItem::Delta("结论".into()));
-    }
-
-    #[test]
-    fn stream_result_line_full_fields() {
-        let line = r#"{"type":"result","subtype":"success","result":"西瓜","session_id":"78284656-2bf4-4540-baed-6f5b17032c8e","is_error":false,"total_cost_usd":0.0133878,"duration_ms":15681,"num_turns":1}"#;
-        match parse_stream_line(line) {
-            StreamItem::Result(r) => {
-                assert_eq!(r.text, "西瓜");
-                assert_eq!(
-                    r.session_id.as_deref(),
-                    Some("78284656-2bf4-4540-baed-6f5b17032c8e")
-                );
-                assert!(!r.is_error);
-                assert_eq!(r.cost_usd, Some(0.0133878));
-                assert_eq!(r.duration_ms, Some(15681));
-                assert_eq!(r.num_turns, Some(1));
-            }
-            other => panic!("expected Result, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stream_result_rejects_poison_session_id() {
-        let line = r#"{"type":"result","result":"x","session_id":"a;rm -rf"}"#;
-        match parse_stream_line(line) {
-            StreamItem::Result(r) => assert_eq!(r.session_id, None),
-            other => panic!("expected Result, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn stream_system_and_user_and_garbage_ignored() {
-        let init = r#"{"type":"system","subtype":"init","session_id":"abc","tools":["Bash"]}"#;
-        let tool_result = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#;
-        assert_eq!(parse_stream_line(init), StreamItem::Ignore);
-        assert_eq!(parse_stream_line(tool_result), StreamItem::Ignore);
-        assert_eq!(parse_stream_line("not json at all"), StreamItem::Ignore);
-        assert_eq!(parse_stream_line(""), StreamItem::Ignore);
+    fn final_frame_missing_fields_and_poison_sid() {
+        let r = harvest_final(&json!({"stopReason": "endTurn"}), String::new());
+        assert!(r.session_id.is_none() && r.cost_usd.is_none());
+        let r = harvest_final(&json!({"sessionId": "a;rm -rf"}), "x".into());
+        assert!(r.session_id.is_none(), "毒 sessionId 拒收");
     }
 
     #[test]
@@ -611,5 +490,21 @@ relay_secret = "s3cret"
         assert!(!valid_session_id("a;rm"));
         assert!(!valid_session_id("a b"));
         assert!(!valid_session_id("a/b"));
+    }
+
+    // ── 台账会话条目解析（§2.4.1 wire 形状） ──
+
+    #[test]
+    fn gateway_session_wire_shape() {
+        let v: Value = serde_json::from_str(
+            r#"[{"sessionId": "d903c124-0892-4818-af0a-fc8c9f7e29c7", "title": "看一下以前的会话", "lastTs": "2026-08-24T00:03:23Z", "turns": 2}]"#,
+        )
+        .unwrap();
+        let sessions: Vec<GatewaySession> = serde_json::from_value(v).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "d903c124-0892-4818-af0a-fc8c9f7e29c7");
+        assert_eq!(sessions[0].title, "看一下以前的会话");
+        assert_eq!(sessions[0].turns, 2);
+        assert!(sessions[0].last_ts.ends_with('Z'));
     }
 }
