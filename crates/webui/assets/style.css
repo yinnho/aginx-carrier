@@ -138,7 +138,6 @@ body {
 }
 #cwd-list {
   border: 1px solid #e2e4e8; border-radius: 4px; max-height: 300px; overflow-y: auto;
-  display: flex; flex-direction: column;
 }
 .cwd-row-item {
   padding: 7px 12px; font-size: 13px; cursor: pointer; border-bottom: 1px solid #f2f3f5;
