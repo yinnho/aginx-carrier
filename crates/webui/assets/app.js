@@ -20,6 +20,10 @@ const state = {
   activeGateway: null,
   localGateway: null, // 本机网关 {target,url}（出码端用；null=未配置藏分享钮）
   pendingScanAgent: null, // {target,agent}：扫码/手输带了 /分身名 后缀，绑定后自动加联系人直达会话
+  // 第八刀同意流：访客申请轮询 / 主人访客面板轮询
+  consent: null, // {target, requestId, agent, name, timer}
+  visitorsTarget: null,
+  visitorsTimer: null,
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -798,11 +802,16 @@ function renderGateways() {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'gw-chip' + (state.activeGateway === g.target ? ' on' : '');
-    const mark = g.bound ? '🔒' : (state.gwNeedsBind && state.gwNeedsBind[g.target] ? '⚠️' : '');
-    chip.title = g.bound ? `已绑定设备：${g.device_name || 'webui'}（${g.url}）` : g.url;
-    chip.innerHTML = `${mark} ${escapeHtml(g.target)} <span class="gw-del" title="移除网关（连带联系人）">✕</span>`;
+    const mark = g.bound ? (g.role === 'visitor' ? '👤' : '🔒') : (state.gwNeedsBind && state.gwNeedsBind[g.target] ? '⚠️' : '');
+    chip.title = g.bound
+      ? (g.role === 'visitor' ? `访客身份：${g.device_name || 'visitor'}（${g.url}）` : `已绑定设备：${g.device_name || 'webui'}（${g.url}）`)
+      : g.url;
+    const visBtn = g.bound && g.role !== 'visitor'
+      ? ` <span class="gw-vis" title="访客管理（同意/吊销）">👥</span>` : '';
+    chip.innerHTML = `${mark} ${escapeHtml(g.target)}${visBtn} <span class="gw-del" title="移除网关（连带联系人）">✕</span>`;
     chip.onclick = (e) => {
       if (e.target.classList.contains('gw-del')) removeGateway(g.target);
+      else if (e.target.classList.contains('gw-vis')) openVisitors(g.target);
       else loadRemoteAgents(g.target);
     };
     list.appendChild(chip);
@@ -858,18 +867,25 @@ async function loadRemoteAgents(target) {
   renderRemoteAgents();
 }
 
-/// 私有网关的配对码绑定行（renderRemoteAgents 的 needs_bind 分支渲染）
+/// 私有网关的准入行（renderRemoteAgents 的 needs_bind 分支渲染）：
+/// 主人设备走配对码绑定；访客走申请访问（第八刀同意流）。
 function renderBindRow(grid, target) {
   const row = document.createElement('div');
   row.className = 'gw-bind-row';
   row.innerHTML =
-    `<div class="gw-bind-tip">⚠️ 网关 ${escapeHtml(target)} 是私有的——在对方机器上执行 <code>aginx pair</code> 拿配对码（5 分钟有效），输入后绑定为本机设备。</div>` +
-    `<input id="pair-code" type="text" placeholder="6 位配对码" autocomplete="off">` +
-    `<button id="gw-bind-btn" class="btn-primary" type="button">绑定</button>`;
+    `<div class="gw-bind-tip">⚠️ 网关 ${escapeHtml(target)} 是私有的。你是这台网关的主人设备？在对方机器上执行 <code>aginx pair</code> 拿配对码绑定；你只是访客？发访问申请等主人同意。</div>` +
+    `<div class="gw-bind-controls">` +
+    `<input id="pair-code" type="text" placeholder="6 位配对码（主人）" autocomplete="off">` +
+    `<button id="gw-bind-btn" class="btn-primary" type="button">绑定</button>` +
+    `<button id="gw-consent-btn" class="btn-ghost" type="button">申请访问…</button>` +
+    `</div>`;
   grid.appendChild(row);
   const input = row.querySelector('#pair-code');
   const doBind = () => bindGateway(target, input.value.trim());
   row.querySelector('#gw-bind-btn').onclick = doBind;
+  const pend = state.pendingScanAgent;
+  row.querySelector('#gw-consent-btn').onclick = () =>
+    openConsent(target, pend && pend.target === target ? pend.agent : null);
   input.onkeydown = (e) => { if (e.key === 'Enter') doBind(); };
   input.focus();
 }
@@ -893,6 +909,209 @@ async function bindGateway(target, pairCode) {
   } catch (e) {
     alert(`配对失败：${e.message}`);
     if (btn) { btn.disabled = false; btn.textContent = '绑定'; }
+  }
+}
+
+// ---------- 同意流（第八刀）：访客申请 → 主人同意 → per-访客 token ----------
+
+function openConsent(target, agent) {
+  state.consent = { target, agent: agent || null, requestId: null, name: '', timer: null };
+  $('consent-gw').textContent = `网关 ${target}`;
+  const row = $('consent-agent-row');
+  if (agent) { $('consent-agent').textContent = agent; row.classList.remove('hidden'); }
+  else row.classList.add('hidden');
+  $('consent-name').value = localStorage.getItem('consent-name') || '';
+  const st = $('consent-status');
+  st.classList.add('hidden');
+  st.classList.remove('mkt-err');
+  $('consent-submit').disabled = false;
+  $('consent-submit').textContent = '发申请';
+  $('consent-name').disabled = false;
+  $('consent-dialog').showModal();
+  $('consent-name').focus();
+}
+
+function stopConsentPoll() {
+  if (state.consent && state.consent.timer) { clearTimeout(state.consent.timer); state.consent.timer = null; }
+}
+
+async function consentSubmit() {
+  const c = state.consent;
+  if (!c) return;
+  const name = $('consent-name').value.trim();
+  if (!name) {
+    const st = $('consent-status');
+    st.textContent = '先填名字——对方同意时会看到';
+    st.classList.add('mkt-err');
+    st.classList.remove('hidden');
+    return;
+  }
+  localStorage.setItem('consent-name', name);
+  c.name = name;
+  const btn = $('consent-submit');
+  btn.disabled = true;
+  btn.textContent = '发送中…';
+  try {
+    const d = await apiSend(`/api/gateways/${encodeURIComponent(c.target)}/request-access`, 'POST',
+      { name, agent: c.agent || undefined });
+    if (d.status === 'approved') {
+      // 网关开了自动通过（客服码即扫即用）——token 已入地址簿，直达
+      await consentApproved(c.target, d.agents || []);
+      return;
+    }
+    c.requestId = d.requestId;
+    const st = $('consent-status');
+    st.textContent = '⏳ 已发申请，等主人同意…（申请 24 小时内有效）';
+    st.classList.remove('mkt-err');
+    st.classList.remove('hidden');
+    $('consent-name').disabled = true;
+    btn.textContent = '等待中…';
+    consentPoll();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '发申请';
+    const st = $('consent-status');
+    st.textContent = `申请失败：${e.message}`;
+    st.classList.add('mkt-err');
+    st.classList.remove('hidden');
+  }
+}
+
+async function consentPoll() {
+  const c = state.consent;
+  if (!c || !c.requestId || !$('consent-dialog').open) { stopConsentPoll(); return; }
+  try {
+    const d = await apiGet(`/api/gateways/${encodeURIComponent(c.target)}/access-status?request=${encodeURIComponent(c.requestId)}&name=${encodeURIComponent(c.name)}`);
+    if (d.status === 'approved') {
+      stopConsentPoll();
+      await consentApproved(c.target, d.agents || []);
+      return;
+    }
+    if (d.status === 'notFound') {
+      stopConsentPoll();
+      const st = $('consent-status');
+      st.textContent = '❌ 申请没通过（被拒绝或已过期）。可以重新发一次，或联系网关主人。';
+      st.classList.add('mkt-err');
+      st.classList.remove('hidden');
+      $('consent-submit').disabled = false;
+      $('consent-submit').textContent = '再发一次';
+      $('consent-name').disabled = false;
+      c.requestId = null;
+      return;
+    }
+    // pending：继续等
+  } catch (e) { /* 网关/网络抖动，下轮再试 */ }
+  if (state.consent === c) c.timer = setTimeout(consentPoll, 3000);
+}
+
+/// 申请通过的收尾（自动通过/取票两条路共用）：刷新地址簿（role=visitor）、
+/// 有客服码后缀则直达会话，否则展示该网关 agent 列表。
+async function consentApproved(target, agents) {
+  $('consent-dialog').close();
+  state.consent = null;
+  delete state.gwNeedsBind[target];
+  state.remoteAgents[target] = agents;
+  state.activeGateway = target;
+  await loadGateways();
+  showView('tools');
+  renderRemoteAgents();
+  const pend = state.pendingScanAgent;
+  if (pend && pend.target === target && agents.length) {
+    await autoAddAgent(target, pend.agent, agents);
+  }
+}
+
+// ---------- 访客管理面板（第八刀，主人侧） ----------
+
+function openVisitors(target) {
+  state.visitorsTarget = target;
+  $('vis-gw').textContent = target;
+  $('vis-requests').innerHTML = '<div class="hint">拉取中…</div>';
+  $('vis-clients').innerHTML = '';
+  $('visitors-dialog').showModal();
+  refreshVisitors();
+  stopVisitorsPoll();
+  state.visitorsTimer = setInterval(refreshVisitors, 5000);
+}
+
+function stopVisitorsPoll() {
+  if (state.visitorsTimer) { clearInterval(state.visitorsTimer); state.visitorsTimer = null; }
+}
+
+async function refreshVisitors() {
+  const t = state.visitorsTarget;
+  if (!t || !$('visitors-dialog').open) { stopVisitorsPoll(); return; }
+  try {
+    const d = await apiGet(`/api/gateways/${encodeURIComponent(t)}/visitors`);
+    renderVisitorPanels(d);
+  } catch (e) {
+    $('vis-requests').innerHTML = `<div class="hint mkt-err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderVisitorPanels(d) {
+  const reqBox = $('vis-requests');
+  const reqs = d.requests || [];
+  if (!reqs.length) {
+    reqBox.innerHTML = '<div class="hint cwd-dim">暂无待审申请</div>';
+  } else {
+    reqBox.innerHTML = '';
+    for (const r of reqs) {
+      const row = document.createElement('div');
+      row.className = 'vis-row';
+      row.innerHTML =
+        `<div class="vis-main"><b>${escapeHtml(r.clientName)}</b>` +
+        `${r.agent ? ` <span class="mkt-badge">想用 ${escapeHtml(r.agent)}</span>` : ' <span class="mkt-badge">全部分身</span>'}` +
+        `${r.approved ? ' <span class="mkt-badge">已批准 · 待访客领取</span>' : ''}` +
+        `<span class="cwd-dim"> · ${new Date(r.createdAt * 1000).toLocaleString()}</span></div>` +
+        `<div class="vis-ops"></div>`;
+      const ops = row.querySelector('.vis-ops');
+      const okBtn = document.createElement('button');
+      okBtn.className = 'btn-primary'; okBtn.textContent = '同意';
+      okBtn.onclick = () => visitorAction('approve', { requestId: r.requestId });
+      const noBtn = document.createElement('button');
+      noBtn.className = 'btn-ghost'; noBtn.textContent = '拒绝';
+      noBtn.onclick = () => visitorAction('reject', { requestId: r.requestId });
+      // 已批准待领取：不可再同意（票已铸），只留拒绝（= 撤单收回）
+      ops.append(...(r.approved ? [noBtn] : [okBtn, noBtn]));
+      reqBox.appendChild(row);
+    }
+  }
+  const cliBox = $('vis-clients');
+  const clients = d.clients || [];
+  if (!clients.length) {
+    cliBox.innerHTML = '<div class="hint cwd-dim">还没有授权访客</div>';
+  } else {
+    cliBox.innerHTML = '';
+    for (const c of clients) {
+      const row = document.createElement('div');
+      row.className = 'vis-row';
+      const scope = c.allowedAgents.length ? c.allowedAgents.join(', ') : '全部分身';
+      const exp = c.expiresAt ? ` · ${new Date(c.expiresAt * 1000).toLocaleDateString()} 到期` : '';
+      row.innerHTML =
+        `<div class="vis-main"><b>${escapeHtml(c.name)}</b>` +
+        ` <span class="mkt-badge">${escapeHtml(scope)}</span>` +
+        `<span class="cwd-dim"> · ${new Date(c.createdAt * 1000).toLocaleDateString()} 授权${exp}</span></div>` +
+        `<div class="vis-ops"></div>`;
+      const ops = row.querySelector('.vis-ops');
+      const btn = document.createElement('button');
+      btn.className = 'btn-ghost'; btn.textContent = '吊销';
+      btn.onclick = () => visitorAction('revoke', { clientId: c.id });
+      ops.appendChild(btn);
+      cliBox.appendChild(row);
+    }
+  }
+}
+
+async function visitorAction(kind, body) {
+  const t = state.visitorsTarget;
+  if (!t) return;
+  if (kind === 'revoke' && !confirm('吊销后对方 token 立即失效，需要重新申请。确定？')) return;
+  try {
+    const d = await apiSend(`/api/gateways/${encodeURIComponent(t)}/visitors/${kind}`, 'POST', body);
+    if (d.panels) renderVisitorPanels(d.panels);
+  } catch (e) {
+    alert(`操作失败：${e.message}`);
   }
 }
 
@@ -1343,6 +1562,11 @@ function wireEvents() {
   $('share-btn').onclick = openShare;
   $('share-close').onclick = () => $('share-dialog').close();
   $('share-copy').onclick = copyShareUrl;
+  // 第八刀：访客申请 + 主人访客管理
+  $('consent-cancel').onclick = () => { stopConsentPoll(); state.consent = null; $('consent-dialog').close(); };
+  $('consent-submit').onclick = consentSubmit;
+  $('consent-name').onkeydown = (e) => { if (e.key === 'Enter') consentSubmit(); };
+  $('visitors-close').onclick = () => { stopVisitorsPoll(); state.visitorsTarget = null; $('visitors-dialog').close(); };
   let mktSearchTimer = null;
   $('mkt-search').addEventListener('input', () => {
     clearTimeout(mktSearchTimer);

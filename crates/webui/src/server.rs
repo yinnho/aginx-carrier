@@ -89,6 +89,12 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/gateways", get(gateways_list).post(gateways_add))
         .route("/api/gateways/{target}/remove", post(gateways_remove))
         .route("/api/gateways/{target}/bind", post(gateways_bind))
+        .route("/api/gateways/{target}/request-access", post(gateways_request_access))
+        .route("/api/gateways/{target}/access-status", get(gateways_access_status))
+        .route("/api/gateways/{target}/visitors", get(visitors_list))
+        .route("/api/gateways/{target}/visitors/approve", post(visitors_approve))
+        .route("/api/gateways/{target}/visitors/reject", post(visitors_reject))
+        .route("/api/gateways/{target}/visitors/revoke", post(visitors_revoke))
         .route("/api/remote-agents", get(remote_agents))
         // 出码端（第七刀）：本机网关地址——分享二维码 agent://<host>[/<agent>] 的网关段
         .route("/api/local-gateway", get(local_gateway))
@@ -532,6 +538,7 @@ async fn gateways_list(State(st): State<Arc<WebState>>) -> Response {
                 "url": g.url,
                 "bound": g.bound,
                 "device_name": g.device_name,
+                "role": g.role,
             })
         })
         .collect();
@@ -709,6 +716,380 @@ async fn gateways_bind(
         "agents": agents,
     }))
     .into_response()
+}
+
+/// 远程 agent 列表 → 前端形状（复合联系人 id + 已添加标记）。
+fn map_remote_agents(
+    st: &Arc<WebState>,
+    target: &str,
+    agents: Vec<crate::agent_client::GatewayAgent>,
+) -> Vec<serde_json::Value> {
+    agents
+        .into_iter()
+        .map(|a| {
+            let cid = format!("@{target}~{}", a.id);
+            serde_json::json!({
+                "id": a.id,
+                "contact_id": cid,
+                "name": a.name,
+                "description": a.description,
+                "agent_type": a.agent_type,
+                "added": st.tool_store.is_added(&cid),
+            })
+        })
+        .collect()
+}
+
+/// 地址簿网关 → 端点（凭证钥匙串 token 自动注入）。None = 不在地址簿。
+fn book_endpoint(st: &Arc<WebState>, target: &str) -> Option<crate::agent_client::AgentEndpoint> {
+    let url = st.tool_store.gateway_url(target)?;
+    let mut ep = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)?;
+    ep.auth_token = st.tool_store.gateway_token(target);
+    Some(ep)
+}
+
+#[derive(Deserialize)]
+struct RequestAccessBody {
+    name: String,
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+/// 访客申请（第八刀同意流，ACP.md §2.9）：requestAccess 不带 token 直发。
+/// 网关 auto_approve 开 = 立即发 token（客服码即扫即用）——token 入地址簿
+/// visitor 槽并返回 agent 列表，前端续接 autoAddAgent 直达会话。
+async fn gateways_request_access(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+    Json(body): Json<RequestAccessBody>,
+) -> Response {
+    let Some(url) = st.tool_store.gateway_url(&target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "名字不能为空"})),
+        )
+            .into_response();
+    }
+    // 访客路径：刻意不带已存 token（主人凭证不借给访客申请连接）
+    let Some(ep) = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "地址簿里的 URL 已失效"})),
+        )
+            .into_response();
+    };
+    let agent = body.agent.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
+    let outcome = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.request_access(&name, agent.as_deref()).await
+    }
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("申请失败: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    match outcome {
+        crate::agent_client::RequestAccessOutcome::Pending { request_id } => {
+            info!(target = %target, request = %request_id, "访问申请已挂单");
+            Json(serde_json::json!({
+                "status": "pending",
+                "requestId": request_id,
+            }))
+            .into_response()
+        }
+        crate::agent_client::RequestAccessOutcome::Approved { token, .. } => {
+            st.tool_store.set_gateway_authorized(&target, &token, &name);
+            info!(target = %target, "auto-approve：访客 token 已入地址簿");
+            let mut ep = ep;
+            ep.auth_token = Some(token);
+            let agents = match async {
+                let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+                conn.initialize().await?;
+                conn.list_agents().await
+            }
+            .await
+            {
+                Ok(list) => map_remote_agents(&st, &target, list),
+                Err(e) => {
+                    tracing::warn!(target = %target, error = %e, "auto-approve 后拉 agent 列表失败");
+                    Vec::new()
+                }
+            };
+            Json(serde_json::json!({
+                "status": "approved",
+                "agents": agents,
+            }))
+            .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct AccessStatusQuery {
+    request: String,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// 访客轮询取票（§2.9 checkAccess）。approved = 一次性取票：token 入地址簿
+/// visitor 槽 + 返回 agent 列表（前端续接 autoAddAgent）。notFound = 被拒/
+/// 已取过/过期，同一状态不泄露原因。
+async fn gateways_access_status(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+    Query(q): Query<AccessStatusQuery>,
+) -> Response {
+    let Some(mut ep) = book_endpoint_no_token(&st, &target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let outcome = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.check_access(&q.request).await
+    }
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("查询失败: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    match outcome {
+        crate::agent_client::CheckAccessOutcome::Pending => {
+            Json(serde_json::json!({"status": "pending"})).into_response()
+        }
+        crate::agent_client::CheckAccessOutcome::NotFound => {
+            Json(serde_json::json!({"status": "notFound"})).into_response()
+        }
+        crate::agent_client::CheckAccessOutcome::Approved { token } => {
+            let name = q.name.unwrap_or_else(|| "visitor".to_string());
+            st.tool_store.set_gateway_authorized(&target, &token, &name);
+            info!(target = %target, "同意流取票成功，访客 token 已入地址簿");
+            ep.auth_token = Some(token);
+            let agents = match async {
+                let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+                conn.initialize().await?;
+                conn.list_agents().await
+            }
+            .await
+            {
+                Ok(list) => map_remote_agents(&st, &target, list),
+                Err(e) => {
+                    tracing::warn!(target = %target, error = %e, "取票后拉 agent 列表失败");
+                    Vec::new()
+                }
+            };
+            Json(serde_json::json!({
+                "status": "approved",
+                "agents": agents,
+            }))
+            .into_response()
+        }
+    }
+}
+
+/// 地址簿 → 无 token 端点（访客路径）。
+fn book_endpoint_no_token(
+    st: &Arc<WebState>,
+    target: &str,
+) -> Option<crate::agent_client::AgentEndpoint> {
+    let url = st.tool_store.gateway_url(target)?;
+    crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)
+}
+
+/// 挂单 + 已发放访客合并视图（主人面板一次拉全）。
+async fn fetch_visitor_panels(
+    ep: &crate::agent_client::AgentEndpoint,
+) -> Result<serde_json::Value, String> {
+    let mut conn = crate::agent_client::AgentConn::connect(ep).await?;
+    conn.initialize().await?;
+    let requests = conn.list_requests().await?;
+    let clients = conn.list_clients().await?;
+    Ok(serde_json::json!({ "requests": requests, "clients": clients }))
+}
+
+/// 主人面板（§2.9 管理法，Bound 连接）。
+async fn visitors_list(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+) -> Response {
+    let Some(ep) = book_endpoint(&st, &target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    match fetch_visitor_panels(&ep).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": e})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VisitorApproveBody {
+    request_id: String,
+    #[serde(default)]
+    allowed_agents: Option<Vec<String>>,
+    #[serde(default)]
+    expire_days: Option<i64>,
+}
+
+/// 同意一条申请（scope 缺省 = 申请时的客服码后缀）。
+async fn visitors_approve(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+    Json(body): Json<VisitorApproveBody>,
+) -> Response {
+    let Some(ep) = book_endpoint(&st, &target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let outcome = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.approve_request(
+            &body.request_id,
+            body.allowed_agents.as_deref(),
+            body.expire_days,
+        )
+        .await
+    }
+    .await
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("同意失败: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    info!(target = %target, request = %body.request_id, "访客申请已同意");
+    let merged = fetch_visitor_panels(&ep).await.unwrap_or(serde_json::json!({}));
+    Json(serde_json::json!({ "client": outcome, "panels": merged })).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VisitorIdBody {
+    request_id: Option<String>,
+    client_id: Option<String>,
+}
+
+/// 拒绝申请 / 吊销访客（两个动作一个 handler 分派，前端同一确认节奏）。
+async fn visitors_reject(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+    Json(body): Json<VisitorIdBody>,
+) -> Response {
+    let Some(ep) = book_endpoint(&st, &target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let Some(request_id) = body.request_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "request_id 必填"})),
+        )
+            .into_response();
+    };
+    let removed = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.reject_request(&request_id).await
+    }
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("拒绝失败: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    info!(target = %target, request = %request_id, removed, "访客申请已拒绝");
+    let merged = fetch_visitor_panels(&ep).await.unwrap_or(serde_json::json!({}));
+    Json(serde_json::json!({ "removed": removed, "panels": merged })).into_response()
+}
+
+async fn visitors_revoke(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+    Json(body): Json<VisitorIdBody>,
+) -> Response {
+    let Some(ep) = book_endpoint(&st, &target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let Some(client_id) = body.client_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "client_id 必填"})),
+        )
+            .into_response();
+    };
+    let removed = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.revoke_client(&client_id).await
+    }
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("吊销失败: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    info!(target = %target, client = %client_id, removed, "访客 token 已吊销");
+    let merged = fetch_visitor_panels(&ep).await.unwrap_or(serde_json::json!({}));
+    Json(serde_json::json!({ "removed": removed, "panels": merged })).into_response()
 }
 
 async fn gateways_remove(

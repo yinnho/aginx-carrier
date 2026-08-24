@@ -311,6 +311,19 @@ body {
   border-radius: 4px; font-size: 13px; letter-spacing: 1px; outline: none;
 }
 .gw-bind-row input:focus { border-color: var(--green); }
+/* 第八刀：绑定行控件容器（配对码 + 申请访问并排） */
+.gw-bind-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* 网关 chip 上的访客管理入口 */
+.gw-vis { color: #6b7280; font-size: 12px; }
+.gw-vis:hover { color: var(--green); }
+/* 访客管理面板行 */
+.vis-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 10px; border: 1px solid #e3e6ea; border-radius: 6px; margin-top: 6px;
+}
+.vis-main { font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vis-ops { display: flex; gap: 6px; flex-shrink: 0; }
+.vis-ops .btn-primary, .vis-ops .btn-ghost { padding: 4px 12px; font-size: 12px; }
 
 /* Hub key 弹窗 */
 #hubkey-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 400px; max-width: 92vw; }

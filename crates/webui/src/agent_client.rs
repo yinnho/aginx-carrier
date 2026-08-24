@@ -88,6 +88,53 @@ pub struct BoundDevice {
     pub token: String,
 }
 
+/// requestAccess 响应两态（§2.9）：pending 挂单 / approved 即得 token
+///（网关 auto_approve）。approved 时 allowedAgents = 实际授予范围。
+#[derive(Debug, Clone)]
+pub enum RequestAccessOutcome {
+    Pending { request_id: String },
+    Approved { token: String, allowed_agents: Vec<String> },
+}
+
+/// checkAccess 响应三态（§2.9）。approved 为一次性取票（网关销单）。
+#[derive(Debug, Clone)]
+pub enum CheckAccessOutcome {
+    Pending,
+    Approved { token: String },
+    NotFound,
+}
+
+/// 访客挂单条目（listRequests 响应，token 永不出现）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingVisitor {
+    pub request_id: String,
+    pub client_name: String,
+    #[serde(default)]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub created_at: i64,
+    /// 已批、待访客 checkAccess 取票（老网关无此字段 → false，视为待审）
+    #[serde(default)]
+    pub approved: bool,
+}
+
+/// 已发放访客（listClients 响应，无 token 字段）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizedVisitor {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub allowed_agents: Vec<String>,
+    #[serde(default)]
+    pub allow_system: bool,
+}
+
 impl AgentEndpoint {
     /// 解析 `agent://<id>.relay.<domain>[:port]`（relay 形态；direct 形态
     /// 待网关提供本地入站面后再补，client 只换连接方式）。
@@ -362,6 +409,123 @@ impl AgentConn {
         serde_json::from_value(result).map_err(|e| format!("bindDevice 响应解析失败: {e}"))
     }
 
+    /// requestAccess（§2.9 访客申请）：未鉴权连接直发；带 agent（客服码
+    /// 后缀）则授权范围默认锁该分身。auto_approve 网关即时发 token。
+    pub async fn request_access(
+        &mut self,
+        client_name: &str,
+        agent: Option<&str>,
+    ) -> Result<RequestAccessOutcome, String> {
+        let mut params = json!({"clientName": client_name});
+        if let Some(a) = agent {
+            params["agent"] = json!(a);
+        }
+        let resp = self.rpc("requestAccess", params).await?;
+        let result = resp.pointer("/result").cloned().unwrap_or(Value::Null);
+        match result.get("status").and_then(|s| s.as_str()) {
+            Some("approved") => {
+                let token = result
+                    .get("token")
+                    .and_then(|t| t.as_str())
+                    .ok_or("approved 响应缺 token")?
+                    .to_string();
+                let allowed = result
+                    .get("allowedAgents")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(RequestAccessOutcome::Approved { token, allowed_agents: allowed })
+            }
+            Some("pending") => {
+                let request_id = result
+                    .get("requestId")
+                    .and_then(|r| r.as_str())
+                    .ok_or("pending 响应缺 requestId")?
+                    .to_string();
+                Ok(RequestAccessOutcome::Pending { request_id })
+            }
+            other => Err(format!("requestAccess 未知状态: {other:?}")),
+        }
+    }
+
+    /// checkAccess（§2.9 访客轮询取票）：approved = 一次性取票（网关销单）。
+    pub async fn check_access(&mut self, request_id: &str) -> Result<CheckAccessOutcome, String> {
+        let resp = self
+            .rpc("checkAccess", json!({"requestId": request_id}))
+            .await?;
+        let result = resp.pointer("/result").cloned().unwrap_or(Value::Null);
+        match result.get("status").and_then(|s| s.as_str()) {
+            Some("approved") => Ok(CheckAccessOutcome::Approved {
+                token: result
+                    .get("token")
+                    .and_then(|t| t.as_str())
+                    .ok_or("approved 响应缺 token")?
+                    .to_string(),
+            }),
+            Some("pending") => Ok(CheckAccessOutcome::Pending),
+            Some("notFound") => Ok(CheckAccessOutcome::NotFound),
+            other => Err(format!("checkAccess 未知状态: {other:?}")),
+        }
+    }
+
+    /// 管理三法（主人侧，Bound 连接）：挂单列表。
+    pub async fn list_requests(&mut self) -> Result<Vec<PendingVisitor>, String> {
+        let resp = self.rpc("listRequests", json!({})).await?;
+        let list = resp.pointer("/result/requests").cloned().unwrap_or(Value::Null);
+        serde_json::from_value(list).map_err(|e| format!("requests 解析失败: {e}"))
+    }
+
+    /// approveRequest（§2.9）：scope 缺省 = 申请时的客服码后缀。
+    pub async fn approve_request(
+        &mut self,
+        request_id: &str,
+        allowed_agents: Option<&[String]>,
+        expire_days: Option<i64>,
+    ) -> Result<serde_json::Value, String> {
+        let mut params = json!({"requestId": request_id});
+        if let Some(agents) = allowed_agents {
+            params["allowedAgents"] = json!(agents);
+        }
+        if let Some(d) = expire_days {
+            params["expireDays"] = json!(d);
+        }
+        let resp = self.rpc("approveRequest", params).await?;
+        Ok(resp.pointer("/result/client").cloned().unwrap_or(Value::Null))
+    }
+
+    /// rejectRequest（§2.9）。
+    pub async fn reject_request(&mut self, request_id: &str) -> Result<bool, String> {
+        let resp = self
+            .rpc("rejectRequest", json!({"requestId": request_id}))
+            .await?;
+        Ok(resp
+            .pointer("/result/removed")
+            .and_then(|r| r.as_bool())
+            .unwrap_or(false))
+    }
+
+    /// listClients（§2.9）：已发放访客（无 token）。
+    pub async fn list_clients(&mut self) -> Result<Vec<AuthorizedVisitor>, String> {
+        let resp = self.rpc("listClients", json!({})).await?;
+        let list = resp.pointer("/result/clients").cloned().unwrap_or(Value::Null);
+        serde_json::from_value(list).map_err(|e| format!("clients 解析失败: {e}"))
+    }
+
+    /// revokeClient（§2.9）：吊销即 token 死。
+    pub async fn revoke_client(&mut self, client_id: &str) -> Result<bool, String> {
+        let resp = self
+            .rpc("revokeClient", json!({"clientId": client_id}))
+            .await?;
+        Ok(resp
+            .pointer("/result/removed")
+            .and_then(|r| r.as_bool())
+            .unwrap_or(false))
+    }
+
     /// 网关已注册 agent 列表。
     pub async fn list_agents(&mut self) -> Result<Vec<GatewayAgent>, String> {
         let resp = self.rpc("listAgents", json!({})).await?;
@@ -584,6 +748,26 @@ relay_secret = "s3cret"
         assert!(r.session_id.is_none() && r.cost_usd.is_none());
         let r = harvest_final(&json!({"sessionId": "a;rm -rf"}), "x".into());
         assert!(r.session_id.is_none(), "毒 sessionId 拒收");
+    }
+
+    #[test]
+    fn consent_wire_shapes_camel() {
+        // §2.9 金样本同形：PendingVisitor / AuthorizedVisitor camelCase 键。
+        let req: PendingVisitor = serde_json::from_str(
+            r#"{"requestId": "req-1a2b3c4d", "clientName": "小明", "agent": "travel-planner", "createdAt": 1755955200}"#,
+        )
+        .expect("PendingVisitor 应吃 camelCase");
+        assert_eq!(req.request_id, "req-1a2b3c4d");
+        assert_eq!(req.agent.as_deref(), Some("travel-planner"));
+
+        let cli: AuthorizedVisitor = serde_json::from_str(
+            r#"{"id": "client-1a2b3c4d", "name": "小明", "createdAt": 1755955200, "expiresAt": null, "allowedAgents": ["travel-planner"], "allowSystem": false}"#,
+        )
+        .expect("AuthorizedVisitor 应吃 camelCase");
+        assert_eq!(cli.allowed_agents, vec!["travel-planner".to_string()]);
+        assert!(cli.expires_at.is_none());
+        // listClients 响应本就不含 token 字段——多余键 serde 默认忽略，
+        // 缺 token 不是错（结构体根本没有该字段）。
     }
 
     #[test]

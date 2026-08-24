@@ -173,10 +173,39 @@
       <h3>分享分身</h3>
       <canvas id="share-qr"></canvas>
       <div id="share-url" class="share-url"></div>
-      <div class="hint">对方在 aginx 里「＋ → 扫码添加分身」扫这个码即可（公开网关即扫即用；私有网关还需你给的配对码）。</div>
+      <div class="hint">对方在 aginx 里「＋ → 扫码添加分身」扫这个码即可。公开网关即扫即用；私有网关对方发访问申请、你在工具页「👥 访客管理」点同意（网关开 auto_approve 则自动通过）。</div>
       <div class="dialog-actions">
         <button type="button" id="share-copy" class="btn-ghost">复制地址</button>
         <button type="button" id="share-close" class="btn-primary">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 第八刀：访客申请访问（同意流） -->
+  <dialog id="consent-dialog">
+    <form onsubmit="return false">
+      <h3>申请访问</h3>
+      <div class="hint" id="consent-gw"></div>
+      <div class="hint hidden" id="consent-agent-row">想使用的分身：<b id="consent-agent"></b></div>
+      <label>你的名字（对方会看到）<input id="consent-name" type="text" placeholder="如：小明" maxlength="64" autocomplete="off"></label>
+      <div class="hint hidden" id="consent-status"></div>
+      <div class="dialog-actions">
+        <button type="button" id="consent-cancel" class="btn-ghost">取消</button>
+        <button type="button" id="consent-submit" class="btn-primary">发申请</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- 第八刀：主人侧访客管理 -->
+  <dialog id="visitors-dialog">
+    <form onsubmit="return false">
+      <h3>访客管理 <span id="vis-gw" class="cwd-dim"></span></h3>
+      <div class="hint" id="vis-hint">扫了你的分享码、正在等同意的访客：点「同意」即发放受限 token（只能用申请时的分身，可随时吊销）。</div>
+      <div id="vis-requests"></div>
+      <div class="hint" style="margin-top:10px">已授权访客：</div>
+      <div id="vis-clients"></div>
+      <div class="dialog-actions">
+        <button type="button" id="visitors-close" class="btn-primary">关闭</button>
       </div>
     </form>
   </dialog>
