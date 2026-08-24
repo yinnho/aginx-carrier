@@ -30,20 +30,11 @@ pub async fn boot_channels(kernel: &Arc<CarrierKernel>) -> anyhow::Result<Channe
     let kh: Arc<dyn KernelHandle> = kernel.clone();
     let mut cm = ChannelManager::new(kh);
 
-    // Sender-based routing: senders/<sender_id>/config.json + 新 sender 自动
-    // 归给第一个 agent。UUID 老路由迁到 agent 名。
-    {
-        let router = Arc::new(carrier_runtime::plugin::router::SenderRouter::new(
-            &kernel.config.home_dir,
-        ));
-        router.migrate_uuid_to_names(|uuid| {
-            uuid.parse::<carrier_types::agent::AgentId>()
-                .ok()
-                .and_then(|id| kernel.registry.get(id).map(|e| e.manifest.name.clone()))
-        });
-        cm.set_sender_router(router);
-        info!("Sender-based routing enabled");
-    }
+    // Sender-based routing: 绑定即路由的内存路由表。真源在会话里
+    // （weixin 的 bind_agent）与 config.toml（webhook），启动时种入。
+    let sender_router = Arc::new(carrier_runtime::plugin::router::SenderRouter::new());
+    cm.set_sender_router(sender_router.clone());
+    info!("Sender-based routing enabled");
 
     // Cron 投递存储（last-channel 追踪）+ 通知路由存储。
     {
@@ -108,6 +99,31 @@ pub async fn boot_channels(kernel: &Arc<CarrierKernel>) -> anyhow::Result<Channe
                 }
             });
         carrier_ilink::token::WEIXIN_STATE.set_persist_fns(persist_fn, load_fn);
+
+        // 绑定即路由：会话加载（DB/磁盘）与扫码注册都会带上 bind_agent
+        // 调 seeder——路由与绑定永远同源，不存在第二个路由真源可劈叉。
+        // UUID 形态的 bind_agent（opencarrier 遗留）解析成分身名。
+        {
+            let router = sender_router.clone();
+            let kernel_ref = kernel.clone();
+            let seed_fn: carrier_ilink::token::RouteSeedFn = Arc::new(
+                move |user_id: &str, agent: &str| {
+                    let agent_ref =
+                        if let Ok(id) = agent.parse::<carrier_types::agent::AgentId>() {
+                            kernel_ref
+                                .registry
+                                .get(id)
+                                .map(|e| e.manifest.name.clone())
+                                .unwrap_or_else(|| agent.to_string())
+                        } else {
+                            agent.to_string()
+                        };
+                    router.set_route(user_id, &agent_ref);
+                    tracing::info!(user = user_id, agent = %agent_ref, "Seeded route from weixin binding");
+                },
+            );
+            carrier_ilink::token::WEIXIN_STATE.set_route_seeder(seed_fn);
+        }
         info!("WeixinState DB persistence callbacks installed");
     }
 
@@ -144,9 +160,6 @@ pub async fn boot_channels(kernel: &Arc<CarrierKernel>) -> anyhow::Result<Channe
             .unwrap_or_else(|e| e.into_inner());
         *guard = Some(dispatcher);
     }
-
-    // weixin-sessions/*.json 的 bind_agent → sender 路由（扫码登录后的绑定）。
-    register_token_file_bindings(kernel, &cm);
 
     Ok(cm)
 }
@@ -218,80 +231,5 @@ pub fn weixin_row_to_token_file(
         expires_at: r.expires_at,
         bind_agent: r.bind_agent,
         context_tokens: ctx,
-    }
-}
-
-/// Read weixin token files and register user_id → bind_agent sender routes
-/// for inbound routing.
-///
-/// 会话真源是 `senders/<uid>/session.json`（save_session 的落点）；
-/// `weixin-sessions/` 是 opencarrier 老目录——保留兼容一拍（有旧文件
-/// 仍生效），新文件只认 senders/。曾长期只扫老目录：扫码绑定的
-/// bind_agent 路由从未注册，新扫码用户消息一律 "No agent resolved" 丢弃。
-fn register_token_file_bindings(kernel: &Arc<CarrierKernel>, cm: &ChannelManager) {
-    let home = kernel.config.home_dir.clone();
-    let mut token_files: Vec<std::path::PathBuf> = Vec::new();
-    // 新位置：senders/<uid>/session.json
-    if let Ok(sender_entries) = std::fs::read_dir(home.join("senders")) {
-        for entry in sender_entries.flatten() {
-            let session = entry.path().join("session.json");
-            if session.is_file() {
-                token_files.push(session);
-            }
-        }
-    }
-    // 老位置：weixin-sessions/*.json（兼容）
-    if let Ok(entries) = std::fs::read_dir(home.join("weixin-sessions")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                token_files.push(path);
-            }
-        }
-    }
-    for path in token_files {
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(tf) = serde_json::from_str::<serde_json::Value>(&content) else {
-            continue;
-        };
-        // 新文件恒有 channel:"weixin"；老文件可能缺字段——缺省放行（老目录
-        // 本来就只有 weixin 会话），明确非 weixin 的才拒。
-        if tf.get("channel")
-            .and_then(|v| v.as_str())
-            .is_some_and(|c| c != "weixin")
-        {
-            continue;
-        }
-        let (Some(bot_id), Some(agent)) = (
-            tf.get("bot_id").and_then(|v| v.as_str()),
-            tf.get("bind_agent").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        if agent.is_empty() {
-            continue;
-        }
-        // Resolve a UUID bind_agent to an agent name for consistency.
-        let agent_ref = if let Ok(id) = agent.parse::<carrier_types::agent::AgentId>() {
-            kernel
-                .registry
-                .get(id)
-                .map(|e| e.manifest.name.clone())
-                .unwrap_or_else(|| agent.to_string())
-        } else {
-            agent.to_string()
-        };
-        if let Some(uid) = tf.get("user_id").and_then(|v| v.as_str()) {
-            if !uid.is_empty() && cm.get_sender_route(uid).is_none() {
-                cm.set_sender_route(uid, &agent_ref);
-                info!(
-                    bot = bot_id,
-                    agent = %agent_ref,
-                    "Registered WeChat binding from token file"
-                );
-            }
-        }
     }
 }

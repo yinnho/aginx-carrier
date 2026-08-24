@@ -58,14 +58,14 @@ enum Command {
         #[arg(long)]
         to: Option<String>,
     },
-    /// iLink 扫码登录：终端渲染 ASCII 二维码，扫后落 senders/ 会话
+    /// iLink 扫码登录：终端渲染 ASCII 二维码，扫后落分身下 senders/ 会话
     QrLogin {
         /// 本账号的 bot 名（标签；会话文件按 user_id 存）
         #[arg(long, default_value = "main")]
         bot_id: String,
-        /// 绑定的分身名（入站路由；缺省不绑=消息无人接会被丢）
+        /// 绑定的分身名（绑定即路由：扫码即绑定，消息直达该分身；必填）
         #[arg(long)]
-        bind_agent: Option<String>,
+        bind_agent: String,
     },
     /// 用户侧票据仓库（借用机制的会话真源在用户侧）
     Ticket {
@@ -125,7 +125,9 @@ fn main() -> anyhow::Result<()> {
         Command::Acp { clone, session } => acp::run(clone, session)?,
         Command::Probe { url } => probe::run(url)?,
         Command::Notify { text, to } => notify::run(text, to)?,
-        Command::QrLogin { bot_id, bind_agent } => qrlogin::run(bot_id, bind_agent)?,
+        Command::QrLogin { bot_id, bind_agent } => {
+            qrlogin::run(bot_id, bind_agent)?
+        }
         Command::Info => {
             let data_dir = dirs::home_dir()
                 .map(|h| h.join(".aginx").join("carrier"))

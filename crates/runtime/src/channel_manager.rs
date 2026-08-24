@@ -159,20 +159,6 @@ impl ChannelManager {
             });
         bridge.set_channel_deliver_fn(deliver_fn);
 
-        // Set up routing-mode probe so the bridge can branch on DirectBind vs SenderBased
-        let channels_for_mode = self.channels.clone();
-        let mode_fn: crate::plugin::bridge::RoutingModeFn =
-            Arc::new(move |channel_type, bot_id| {
-                let channels = channels_for_mode.lock().unwrap_or_else(|e| e.into_inner());
-                for channel in channels.values() {
-                    if channel.channel_type() == channel_type {
-                        return channel.routing_mode_for(bot_id);
-                    }
-                }
-                carrier_types::channel::RoutingMode::SenderBased
-            });
-        bridge.set_routing_mode_fn(mode_fn);
-
         // Load notify routes — enables [NOTIFY:type]content[/NOTIFY] markers → cross-channel push.
         // Try DB first, fall back to notify_routes.json.
         {
@@ -328,28 +314,6 @@ impl ChannelManager {
         })
     }
 
-    /// Look up the routing mode for a channel type.
-    ///
-    /// Used by the bridge to decide whether to run the multi-clone pipeline
-    /// (SenderBased) or route straight to the bound agent (DirectBind).
-    pub fn routing_mode(&self, channel_type: &str) -> carrier_types::channel::RoutingMode {
-        self.routing_mode_for(channel_type, "")
-    }
-
-    pub fn routing_mode_for(
-        &self,
-        channel_type: &str,
-        bot_id: &str,
-    ) -> carrier_types::channel::RoutingMode {
-        let channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
-        for channel in channels.values() {
-            if channel.channel_type() == channel_type {
-                return channel.routing_mode_for(bot_id);
-            }
-        }
-        carrier_types::channel::RoutingMode::SenderBased
-    }
-
     /// Send a text message by searching all channels for a matching bot_id.
     /// This matches the old PluginManager behavior where bot_id was the primary key.
     pub fn channel_send_by_bot(
@@ -376,72 +340,6 @@ impl ChannelManager {
         if let Some(ref router) = self.sender_router {
             router.set_route(route_key, agent_id);
         }
-    }
-
-    /// Set an alias for an agent under a sender's namespace.
-    pub fn set_sender_alias(&self, sender_id: &str, name: &str, agent_id: &str) {
-        if let Some(ref router) = self.sender_router {
-            router.set_alias(sender_id, name, agent_id);
-        }
-    }
-
-    /// Get the user-set alias for an agent under a sender's namespace.
-    /// Returns None if the sender/agent has no clone entry.
-    pub fn get_sender_alias(&self, sender_id: &str, agent_id: &str) -> Option<String> {
-        self.sender_router
-            .as_ref()
-            .and_then(|router| router.get_alias(sender_id, agent_id))
-    }
-
-    /// Get a sender's current route (no auto-assign).
-    pub fn get_sender_route(&self, sender_id: &str) -> Option<String> {
-        self.sender_router.as_ref()?.get_route(sender_id)
-    }
-
-    /// Remove a sender's route.
-    pub fn remove_sender_route(&self, sender_id: &str) -> Option<String> {
-        self.sender_router.as_ref()?.remove_route(sender_id)
-    }
-
-    /// List all sender routes.
-    pub fn list_sender_routes(&self) -> Vec<(String, String)> {
-        match &self.sender_router {
-            Some(router) => router.list_routes(),
-            None => Vec::new(),
-        }
-    }
-
-    /// List all sender routes with the user-set alias for each.
-    pub fn list_sender_routes_with_aliases(&self) -> Vec<(String, String, Option<String>)> {
-        match &self.sender_router {
-            Some(router) => router.list_routes_with_aliases(),
-            None => Vec::new(),
-        }
-    }
-
-    /// Count how many senders have each agent bound (default + clones).
-    pub fn count_agents_per_sender(&self) -> std::collections::HashMap<String, usize> {
-        match &self.sender_router {
-            Some(router) => router.count_agents_per_sender(),
-            None => std::collections::HashMap::new(),
-        }
-    }
-
-    /// Start a new sender that was added after initial startup.
-    ///
-    /// Called by the API after writing a new `senders/{sender_id}/session.json`.
-    /// The matching channel loads the session and starts its connection immediately.
-    pub fn start_sender(&self, channel_type: &str, sender_id: &str) -> CarrierResult<()> {
-        let mut channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
-        for channel in channels.values_mut() {
-            if channel.channel_type() == channel_type {
-                return channel.start_sender(sender_id, self.message_tx.clone());
-            }
-        }
-        Err(CarrierError::InvalidInput(format!(
-            "Channel not found for type: {}, sender: {}",
-            channel_type, sender_id
-        )))
     }
 
     /// Get all plugin tool definitions.

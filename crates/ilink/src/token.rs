@@ -29,6 +29,10 @@ const SESSION_SAVE_INTERVAL_SECS: i64 = 1800; // 30 min
 pub type SessionPersistFn = Arc<dyn Fn(&BotTokenFile) + Send + Sync>;
 /// Load all persisted sessions from the database.
 pub type SessionsLoadFn = Arc<dyn Fn() -> Vec<BotTokenFile> + Send + Sync>;
+/// Seed an inbound route (user_id → agent). Set by wiring；会话无论从
+/// DB 还是磁盘加载，bind_agent 路由都随加载自动种入——路由与绑定
+/// 永远同源，不可能再劈叉。
+pub type RouteSeedFn = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // Per-bot runtime state
@@ -104,22 +108,80 @@ impl BotSession {
 // Global state manager
 // ---------------------------------------------------------------------------
 
-/// 扫 `senders/*/session.json` 里的 weixin 会话（JSON 旁路——DB 不可用/
-/// 为空时的兜底）。`load_from_dir` 与 `aginx-carrier notify` 一次性进程
-/// 共用；别处复制这份过滤逻辑会漂移。
+/// 扫 `workspaces/*/senders/*/session.json` 里的 weixin 会话（JSON 旁路
+/// ——DB 不可用/为空时的兜底）。`load_from_dir`/`load_new_from_dir` 与
+/// `aginx-carrier notify` 一次性进程共用；别处复制这份过滤逻辑会漂移。
+///
+/// 会话住在分身下（绑定即路由：从哪个分身目录下发现，就绑给哪个分身），
+/// 顶层 senders/ 命名空间已随 opencarrier 多分身模型退役。
 pub fn scan_json_token_files() -> Vec<BotTokenFile> {
     let home = carrier_types::config::home_dir();
     let mut tfs = Vec::new();
-    for (sender_id, json) in carrier_types::config::scan_sender_sessions(&home) {
-        if json.get("channel").and_then(|v| v.as_str()) != Some("weixin") {
+    let Ok(workspaces) = std::fs::read_dir(home.join("workspaces")) else {
+        return tfs;
+    };
+    for agent_entry in workspaces.flatten() {
+        let senders_dir = agent_entry.path().join("senders");
+        let Ok(senders) = std::fs::read_dir(&senders_dir) else {
             continue;
-        }
-        match serde_json::from_value::<BotTokenFile>(json) {
-            Ok(tf) => tfs.push(tf),
-            Err(e) => warn!(sender_id = %sender_id, "Failed to parse weixin session: {e}"),
+        };
+        for sender_entry in senders.flatten() {
+            let path = sender_entry.path().join("session.json");
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
+                warn!(path = %path.display(), "Failed to parse session file as JSON");
+                continue;
+            };
+            if json.get("channel").and_then(|v| v.as_str()) != Some("weixin") {
+                continue;
+            }
+            match serde_json::from_value::<BotTokenFile>(json) {
+                Ok(mut tf) => {
+                    // 目录即绑定真源；文件内字段只作一致性校验，不一致以目录为准。
+                    let dir_agent = agent_entry.file_name().to_string_lossy().to_string();
+                    if tf.bind_agent.as_deref() != Some(dir_agent.as_str()) {
+                        warn!(
+                            path = %path.display(),
+                            file_says = ?tf.bind_agent,
+                            dir_says = %dir_agent,
+                            "session.json bind_agent mismatches its directory — trusting the directory"
+                        );
+                        tf.bind_agent = Some(dir_agent);
+                    }
+                    tfs.push(tf);
+                }
+                Err(e) => warn!(path = %path.display(), "Failed to parse weixin session: {e}"),
+            }
         }
     }
     tfs
+}
+
+/// Delete `workspaces/<other>/senders/<user_key>/session.json` for every
+/// clone other than `keep_agent` — a rebind moves the session, it doesn't
+/// fork it.
+fn remove_stale_session_files(home: &std::path::Path, user_key: &str, keep_agent: &str) {
+    let Ok(workspaces) = std::fs::read_dir(home.join("workspaces")) else {
+        return;
+    };
+    for agent_entry in workspaces.flatten() {
+        let agent = agent_entry.file_name().to_string_lossy().to_string();
+        if agent == keep_agent {
+            continue;
+        }
+        let stale = agent_entry.path().join("senders").join(user_key).join("session.json");
+        if stale.is_file() {
+            match std::fs::remove_file(&stale) {
+                Ok(()) => info!(path = %stale.display(), keep = %keep_agent, "Removed stale session file after rebind"),
+                Err(e) => warn!(path = %stale.display(), "Failed to remove stale session file: {e}"),
+            }
+        }
+    }
 }
 
 /// Global state manager for all iLink bots.
@@ -132,6 +194,8 @@ pub struct WeixinState {
     pub session_persist: Mutex<Option<SessionPersistFn>>,
     /// DB-backed session load callback. When set, load_from_dir reads from DB.
     pub sessions_load: Mutex<Option<SessionsLoadFn>>,
+    /// Route seeding callback (user_id → bind_agent). Set by wiring.
+    pub route_seeder: Mutex<Option<RouteSeedFn>>,
 }
 
 impl WeixinState {
@@ -141,6 +205,7 @@ impl WeixinState {
             http: crate::build_http_client(),
             session_persist: Mutex::new(None),
             sessions_load: Mutex::new(None),
+            route_seeder: Mutex::new(None),
         }
     }
 
@@ -148,6 +213,23 @@ impl WeixinState {
     pub fn set_persist_fns(&self, persist: SessionPersistFn, load: SessionsLoadFn) {
         *self.session_persist.lock().unwrap() = Some(persist);
         *self.sessions_load.lock().unwrap() = Some(load);
+    }
+
+    /// Set the route seeder (user_id → bind_agent). Called by wiring before
+    /// sessions load, so every load path seeds inbound routes automatically.
+    pub fn set_route_seeder(&self, seed: RouteSeedFn) {
+        *self.route_seeder.lock().unwrap() = Some(seed);
+    }
+
+    /// Seed a route for a loaded/registered session if bound. No-op when
+    /// wiring hasn't installed a seeder (tests, one-shot processes).
+    fn seed_route(&self, user_id: &str, bind_agent: Option<&str>) {
+        let Some(agent) = bind_agent.filter(|a| !a.is_empty()) else {
+            return;
+        };
+        if let Some(seed) = self.route_seeder.lock().unwrap().as_ref() {
+            seed(user_id, agent);
+        }
     }
 
     /// Load persisted tokens from the database (preferred) or JSON files.
@@ -184,6 +266,7 @@ impl WeixinState {
             }
             let persisted_ctx = tf.context_tokens.clone();
             count += 1;
+            self.seed_route(&user_id, tf.bind_agent.as_deref());
             let state = BotSession {
                 bot_id: tf.bot_id.clone(),
                 bot_token: tf.bot_token,
@@ -253,6 +336,12 @@ impl WeixinState {
             self.bots.insert(key.to_string(), state);
         }
 
+        // 绑定即路由：扫码确认的那一刻路由即生效（含 daemon 内工具触发的
+        // 扫码——不必等重启重新种入）。
+        if let Some(uid) = user_id.filter(|u| !u.is_empty()) {
+            self.seed_route(uid, bind_agent);
+        }
+
         info!(user_id = ?user_id, bot_id = bot_id, "Registered iLink bot from QR scan");
     }
 
@@ -284,13 +373,25 @@ impl WeixinState {
             return;
         }
 
-        // Fallback: JSON file
-        let filename_key = state.user_id.as_deref().unwrap_or(&state.bot_id);
-        let dir = carrier_types::config::home_dir().join("senders").join(filename_key);
+        // Fallback: JSON file under the bound clone's workspace
+        // (workspaces/<bind_agent>/senders/<user>/session.json — 绑定即路由，
+        // 会话住在分身下). No bind_agent → nowhere to put it: warn and skip
+        // (the session is still usable in-memory; one-shot qr-login requires
+        // --bind-agent).
+        let Some(agent) = state.bind_agent.as_deref().filter(|a| !a.is_empty()) else {
+            warn!(bot_id = %state.bot_id, "No bind_agent on session — not writing session.json (binding is routing; pass --bind-agent)");
+            return;
+        };
+        let user_key = state.user_id.as_deref().unwrap_or(&state.bot_id);
+        let home = carrier_types::config::home_dir();
+        let dir = carrier_types::config::sender_data_dir(&home, user_key, agent, None);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             warn!(dir = %dir.display(), "Failed to create sender directory: {e}");
             return;
         }
+        // 重绑 = 搬家：清掉其他分身下同 user 的旧会话文件，保持一个绑定
+        // 一个分身（否则扫描会看到两个候选）。
+        remove_stale_session_files(&home, user_key, agent);
         let path = dir.join("session.json");
         match serde_json::to_string_pretty(&tf) {
             Ok(json) => {
@@ -392,24 +493,28 @@ impl WeixinState {
         self.bots.get(&found_key)
     }
 
-    /// Load new bots — from DB if available, otherwise scan JSON files.
-    /// Used by the dynamic session watcher to pick up QR-scanned bots.
+    /// Load new bots — merge DB rows and workspace session.json files into
+    /// the in-memory bot cache. Used by the respawn watcher each cycle to
+    /// pick up QR-scanned bots without a restart: one-shot `qr-login` writes
+    /// session.json (no DB in that process), the daemon's own saves go to DB.
     pub fn load_new_from_dir(&self) {
-        // Try DB first: reload and insert any sessions not yet in memory
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // DB rows first: insert any sessions not yet in memory
         if let Some(ref load_fn) = *self.sessions_load.lock().unwrap() {
             for tf in load_fn() {
                 let sender_id = tf.user_id.as_deref().unwrap_or("");
                 if sender_id.is_empty() || self.bots.contains_key(sender_id) {
                     continue;
                 }
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
                 if now >= tf.expires_at {
                     continue;
                 }
                 info!(sender_id = %sender_id, ctx_count = tf.context_tokens.len(), "Dynamic watcher loaded new iLink bot from DB");
+                self.seed_route(sender_id, tf.bind_agent.as_deref());
                 let state = BotSession {
                     bot_id: tf.bot_id.clone(),
                     bot_token: tf.bot_token,
@@ -426,26 +531,17 @@ impl WeixinState {
                 };
                 self.bots.insert(sender_id.to_string(), state);
             }
-            return;
         }
 
-        // Fallback: scan JSON files
-        let home = carrier_types::config::home_dir();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        for (sender_id, json) in carrier_types::config::scan_sender_sessions(&home) {
-            if json.get("channel").and_then(|v| v.as_str()) != Some("weixin") {
+        // Workspace session.json: refresh existing (rebind / token renewal)
+        // + insert new
+        for tf in scan_json_token_files() {
+            let Some(sender_id) = tf.user_id.clone().filter(|s| !s.is_empty()) else {
                 continue;
-            }
-            let tf: BotTokenFile = match serde_json::from_value(json) {
-                Ok(t) => t,
-                Err(_) => continue,
             };
             if let Some(mut existing) = self.bots.get_mut(&sender_id) {
-                if existing.bot_token != tf.bot_token {
+                if existing.bot_token != tf.bot_token || existing.bind_agent != tf.bind_agent {
+                    let rebound = existing.bind_agent != tf.bind_agent;
                     info!(sender_id = %sender_id, "Refreshing iLink bot from updated session file (new bot_token)");
                     existing.bot_token = tf.bot_token.clone();
                     existing.baseurl = tf.baseurl;
@@ -455,6 +551,9 @@ impl WeixinState {
                     existing.active.store(true, Ordering::Relaxed);
                     existing.bind_agent = tf.bind_agent.clone();
                     self.save_session(&existing);
+                    if rebound {
+                        self.seed_route(&sender_id, tf.bind_agent.as_deref());
+                    }
                 }
                 {
                     let mut ctx = existing
@@ -471,6 +570,7 @@ impl WeixinState {
                 continue;
             }
             info!(sender_id = %sender_id, "Dynamic watcher loaded new iLink bot");
+            self.seed_route(&sender_id, tf.bind_agent.as_deref());
             let persisted_ctx = tf.context_tokens.clone();
             let state = BotSession {
                 bot_id: tf.bot_id.clone(),

@@ -25,7 +25,7 @@ impl ToolProvider for WeixinQrLoginTool {
     fn execute(
         &self,
         args: &Value,
-        _context: &PluginToolContext,
+        context: &PluginToolContext,
     ) -> Result<String, PluginToolError> {
         let bot_id = args["bot_id"].as_str().unwrap_or("default").to_string();
 
@@ -35,8 +35,11 @@ impl ToolProvider for WeixinQrLoginTool {
             .build()
             .map_err(|e| PluginToolError::tool(format!("Runtime error: {e}")))?;
 
+        // 绑定即路由：agent 自己扫的码绑到 agent 自己（context.agent_id
+        // 在 aginx-carrier 里是分身名）。
+        let bind = context.agent_id.clone();
         let bot = bot_id.clone();
-        let result = rt.block_on(async { auth::qr_login(&http, &bot, None, None).await });
+        let result = rt.block_on(async move { auth::qr_login(&http, &bot, Some(&bind), None).await });
 
         result.map_err(|e| PluginToolError::tool(e.to_string()))
     }

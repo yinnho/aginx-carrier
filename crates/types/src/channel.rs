@@ -40,30 +40,6 @@ where
     inner
 }
 
-/// How a channel routes inbound messages to agents.
-///
-/// Declared by each channel via `Channel::routing_mode()`. The bridge branches
-/// on this rather than hardcoding channel names, so new one-to-one channels
-/// just declare `DirectBind` with zero bridge changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoutingMode {
-    /// Per-sender routing with clone/naming/switch support.
-    ///
-    /// Each sender (user) can have a default agent plus named clones. The bridge
-    /// runs the full pipeline: naming flow, rename detection, @-name switching,
-    /// `/list`, and the "needs naming" check. Used by weixin iLink, wecom,
-    /// feishu, dingtalk (conversational agents that get personalized per user).
-    SenderBased,
-
-    /// Direct bind to a single fixed agent — no clones, no naming.
-    ///
-    /// All inbound messages route straight to the channel's `bind_agent`. The
-    /// clone/naming/switch pipeline is skipped entirely. Used by weixin-oa and
-    /// future one-to-one channels (OA, SMS, email auto-reply, customer-service
-    /// bots) where one channel = one fixed agent serving all users.
-    DirectBind,
-}
-
 /// A channel adapter that bridges an external platform to the carrier kernel.
 ///
 /// Implementations handle platform-specific protocols (WebSocket, HTTP callback, etc.)
@@ -77,22 +53,6 @@ pub trait Channel: Send + Sync {
 
     /// Bot identifier this channel belongs to.
     fn bot_id(&self) -> &str;
-
-    /// How this channel routes messages to agents.
-    ///
-    /// Defaults to `SenderBased` (backward compatible). One-to-one channels
-    /// (weixin-oa, etc.) override to return `DirectBind`.
-    fn routing_mode(&self) -> RoutingMode {
-        RoutingMode::SenderBased
-    }
-
-    /// Routing mode for a specific bot on this channel.
-    ///
-    /// Default: same as [`routing_mode`]. WeCom overrides this so kf bots are
-    /// `DirectBind` while SmartBot/App stay `SenderBased`.
-    fn routing_mode_for(&self, _bot_id: &str) -> RoutingMode {
-        self.routing_mode()
-    }
 
     /// Start receiving messages from the channel.
     ///
@@ -127,23 +87,6 @@ pub trait Channel: Send + Sync {
 
     /// Stop the channel and release resources.
     fn stop(&mut self);
-
-    /// Start a specific sender that was added after initial startup.
-    ///
-    /// Called by the API after writing a new `senders/{sender_id}/session.json`.
-    /// The channel should load the session and start its connection immediately,
-    /// without waiting for a polling cycle.
-    fn start_sender(
-        &self,
-        sender_id: &str,
-        sender: mpsc::Sender<PluginMessage>,
-    ) -> CarrierResult<()> {
-        let _ = (sender_id, sender);
-        Err(CarrierError::InvalidInput(format!(
-            "start_sender not implemented for {}",
-            self.channel_type()
-        )))
-    }
 
     /// Whether this channel supports proactive push (sending without an inbound
     /// context). Channels that require a context_token / response_url should

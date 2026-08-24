@@ -5,7 +5,7 @@
 //! 通道是为了让 bridge 的 `send_response` 能按 channel_type 找到落点，
 //! 不然每次异步轮结束都刷 "Channel not found" 错误日志。
 
-use carrier_types::channel::{Channel, RoutingMode};
+use carrier_types::channel::Channel;
 use carrier_types::error::CarrierResult;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -32,11 +32,6 @@ impl Channel for WebhookChannel {
 
     fn bot_id(&self) -> &str {
         ""
-    }
-
-    /// 一 hook 绑一 agent（配置里定死），桥跳过 naming/clone 管线。
-    fn routing_mode(&self) -> RoutingMode {
-        RoutingMode::DirectBind
     }
 
     fn start(&mut self, _sender: mpsc::Sender<carrier_types::plugin::PluginMessage>) -> CarrierResult<()> {

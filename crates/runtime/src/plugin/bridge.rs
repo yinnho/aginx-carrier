@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
-use carrier_types::channel::RoutingMode;
+use tracing::{error, info, warn};
 use carrier_types::error::CarrierError;
 use carrier_types::plugin::{PluginContent, PluginMessage};
 
@@ -21,7 +20,6 @@ use crate::kernel_handle::KernelHandle;
 pub use crate::outbound::{
     is_no_reply_sentinel, prepare_outbound, process_deliver_markers_pub, process_publish_markers,
     ChannelDeliverFn, ChannelSendFn, ContentRegistry, NotifyTarget, OutboundCtx, OutboundResult,
-    RoutingModeFn,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,16 +37,12 @@ pub struct PluginBridgeManager {
     /// Function to deliver rich content through channels
     /// (channel_type, bot_id, user_id, content). Backs `[DELIVER:key]` markers.
     channel_deliver_fn: Option<ChannelDeliverFn>,
-    /// Function to look up a channel's routing mode by channel_type.
-    routing_mode_fn: Option<RoutingModeFn>,
     /// Notify routing: notify_type → push target. Loaded from notify_routes.json.
     notify_routes: Option<Arc<std::collections::HashMap<String, NotifyTarget>>>,
     /// Sender-based routing (route_key → agent_id).
     sender_router: Option<Arc<SenderRouter>>,
     /// Cron delivery: last-channel tracking + buffered notifications.
     cron_delivery: Option<Arc<carrier_memory::CronDeliveryStore>>,
-    /// route_key of users currently in the "naming" flow (waiting for agent name).
-    pending_naming: Arc<DashMap<String, String>>,
     /// Per route_key mutex so same-user messages (esp. WeChat) run serially.
     /// Prevents concurrent agent loops racing the same session when multiple
     /// inbounds land close together. Cross-user traffic still concurrent.
@@ -62,11 +56,9 @@ impl PluginBridgeManager {
             kernel,
             channel_send_fn: None,
             channel_deliver_fn: None,
-            routing_mode_fn: None,
             notify_routes: None,
             sender_router: None,
             cron_delivery: None,
-            pending_naming: Arc::new(DashMap::new()),
             route_locks: Arc::new(DashMap::new()),
         }
     }
@@ -89,11 +81,6 @@ impl PluginBridgeManager {
     /// Set the channel deliver function for delivering rich content (`[DELIVER]`).
     pub fn set_channel_deliver_fn(&mut self, f: ChannelDeliverFn) {
         self.channel_deliver_fn = Some(f);
-    }
-
-    /// Set the routing-mode probe (tells the bridge which channels are DirectBind).
-    pub fn set_routing_mode_fn(&mut self, f: RoutingModeFn) {
-        self.routing_mode_fn = Some(f);
     }
 
     /// Set notify routing (enables `[NOTIFY:type]content[/NOTIFY] markers → cross-channel push).
@@ -230,111 +217,8 @@ impl PluginBridgeManager {
             }
         }
 
-        // Determine this channel's routing mode. DirectBind channels (weixin-oa,
-        // future one-to-one channels) skip the entire multi-clone pipeline and
-        // route straight to their fixed bind_agent.
-        let direct_bind = self
-            .routing_mode_fn
-            .as_ref()
-            .map(|f| f(&msg.channel_type, &msg.bot_id) == RoutingMode::DirectBind)
-            .unwrap_or(false);
-
-        // Multi-clone pipeline: naming flow, rename detection, @-name switching,
-        // and /list — only relevant for SenderBased channels.
-        if !direct_bind {
-            // 1. Check if route is in naming flow
-            if let Some((_, agent_id)) = self.pending_naming.remove(&rk) {
-                let name = text.trim().to_string();
-                if !name.is_empty() {
-                    if let Some(ref router) = self.sender_router {
-                        router.set_alias(&rk, &name, &agent_id);
-                    }
-                    let confirm = format!("好的，我现在叫{name}。以后叫我{name}我就出来啦！");
-                    self.send_response(&msg, &confirm).await;
-                } else {
-                    // Empty name, keep in pending
-                    self.pending_naming.insert(rk.clone(), agent_id);
-                    self.send_response(&msg, "名字不能为空哦，请再告诉我你想叫我什么？")
-                        .await;
-                }
-                return;
-            }
-
-            // 2. Detect rename requests (e.g. "以后叫我小趣", "改名叫小趣")
-            if let Some(ref router) = self.sender_router {
-                if let Some(new_name) = Self::parse_rename(&text) {
-                    if let Some(agent_id) = router.get_route(&rk) {
-                        router.set_alias(&rk, &new_name, &agent_id);
-                        let confirm =
-                            format!("好的，我以后叫{new_name}啦！叫我{new_name}我就出来。");
-                        self.send_response(&msg, &confirm).await;
-                        return;
-                    }
-                }
-            }
-
-            // 3. Try name-based routing (message starts with an alias)
-            if let Some((agent_id, remaining)) = self.try_route_by_name(&text, &rk) {
-                info!(
-                    channel = %msg.channel_type,
-                    bot = %msg.bot_id,
-                    agent = %agent_id,
-                    route_key = %rk,
-                    "Routing by name to agent"
-                );
-
-                // Update default route to this agent
-                if let Some(ref router) = self.sender_router {
-                    router.set_route(&rk, &agent_id);
-                }
-
-                let msg_text = if remaining.is_empty() {
-                    "你好".to_string()
-                } else {
-                    remaining
-                };
-                match self
-                    .kernel
-                    .send_to_agent(
-                        &agent_id,
-                        &msg_text,
-                        Some(&msg.sender_id),
-                        Some(&msg.sender_name),
-                        None,
-                        Some(&rk),
-                        Some(&msg.channel_type),
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        if response.trim().is_empty() {
-                            // Sender-gate Merged outcome: this message was
-                            // coalesced into an earlier combined turn whose reply
-                            // already went to this recipient — sending here would
-                            // duplicate it.
-                            debug!(agent = %agent_id, "empty response (merged into a prior turn) — no send");
-                        } else {
-                            self.send_response(&msg, &response).await;
-                        }
-                    }
-                    Err(e) => {
-                        error!(agent = %agent_id, error = %e, "Failed to send message to agent");
-                        self.send_response(&msg, "抱歉，处理消息时遇到了问题，请稍后再试。")
-                            .await;
-                    }
-                }
-                return;
-            }
-
-            // 4. /list command
-            if text.trim().eq_ignore_ascii_case("/list") {
-                let response = self.format_agent_list(&rk);
-                self.send_response(&msg, &response).await;
-                return;
-            }
-        } // end multi-clone pipeline (!direct_bind)
-
-        // 5. Default routing via route_key
+        // 1. Resolve route via route_key（绑定即路由：一个 sender 一个分身）。
+        // 未绑定（无路由）的消息直接丢弃并告警——不静默指派、不命名。
         let agent_id = self.resolve_agent(&msg);
         if agent_id.is_empty() {
             warn!(
@@ -345,20 +229,6 @@ impl PluginBridgeManager {
             );
             return;
         }
-
-        // 6. Check if this agent needs a name (SenderBased only — DirectBind
-        // channels have a fixed agent that never needs naming)
-        if !direct_bind {
-            if let Some(ref router) = self.sender_router {
-                if router.needs_naming(&rk) {
-                    info!(route_key = %rk, agent = %agent_id, "Agent needs naming, entering naming flow");
-                    self.pending_naming.insert(rk.clone(), agent_id.clone());
-                    self.send_response(&msg, "请给我取个名字吧！以后叫这个名字我就会出来。")
-                        .await;
-                    return;
-                }
-            }
-        } // end needs-naming check (!direct_bind)
 
         info!(
             channel = %msg.channel_type,
@@ -628,153 +498,6 @@ impl PluginBridgeManager {
                 msg.bot_id.clone(),
             )
             .await
-    }
-
-    // -----------------------------------------------------------------------
-    // Name-based routing
-    // -----------------------------------------------------------------------
-
-    /// Try to route by matching the start of the text against aliases for the route_key.
-    /// Supports two formats:
-    ///   `@名字` or `@名字 你好` — @ prefix triggers agent switch
-    ///   `名字 你好` — name at start of text (legacy format)
-    /// Returns (agent_id, remaining_text) if matched, None otherwise.
-    /// Parse a rename request from the user's message.
-    /// Matches patterns like "以后叫我小趣", "改名叫小趣", "叫我小趣",
-    /// "以后叫小趣", "换个名字叫小趣", "重新叫小趣".
-    /// Returns the new name if matched, None otherwise.
-    fn parse_rename(text: &str) -> Option<String> {
-        let t = text.trim();
-        let patterns = [
-            "以后叫我",
-            "以后叫",
-            "改名叫",
-            "改名叫我",
-            "叫我",
-            "换个名字叫",
-            "换个名叫",
-            "重新叫",
-            "换个叫法叫",
-            "改个名叫",
-        ];
-        for pat in &patterns {
-            if let Some(rest) = t.strip_prefix(pat) {
-                let name = rest
-                    .trim()
-                    .trim_end_matches(['吧', '！', '!', '。', '~'])
-                    .trim();
-                if !name.is_empty() && name.len() <= 20 {
-                    return Some(name.to_string());
-                }
-            }
-        }
-        None
-    }
-
-    fn try_route_by_name(&self, text: &str, route_key: &str) -> Option<(String, String)> {
-        let router = self.sender_router.as_ref()?;
-        if route_key.is_empty() {
-            return None;
-        }
-
-        let aliases = router.list_aliases(route_key);
-        if aliases.is_empty() {
-            return None;
-        }
-
-        // Strip leading @ if present, then match against aliases
-        let text_stripped = text.strip_prefix('@').unwrap_or(text);
-        let text_lower = text_stripped.to_lowercase();
-
-        // Find longest matching alias at the start of text
-        let mut best_name: Option<&str> = None;
-        let mut best_agent_id: Option<String> = None;
-        let mut best_len = 0;
-
-        for (name, agent_id) in &aliases {
-            if text_lower.starts_with(name.as_str()) && name.len() > best_len {
-                // Name must be followed by a separator or end of text
-                let rest = &text_lower[name.len()..];
-                if rest.is_empty()
-                    || rest.starts_with('，')
-                    || rest.starts_with(',')
-                    || rest.starts_with(' ')
-                    || rest.starts_with('！')
-                    || rest.starts_with('!')
-                    || rest.starts_with('？')
-                    || rest.starts_with('?')
-                {
-                    best_name = Some(name);
-                    best_agent_id = Some(agent_id.clone());
-                    best_len = name.len();
-                }
-            }
-        }
-
-        match (best_name, best_agent_id) {
-            (Some(_), Some(agent_id)) => {
-                // Strip the name and separator from the text
-                let remaining = text_stripped[best_len..]
-                    .trim_start_matches(['，', ',', ' ', '！', '!', '？', '?'])
-                    .to_string();
-                info!(
-                    route_key = %route_key,
-                    agent = %agent_id,
-                    "Name-based route matched"
-                );
-                Some((agent_id, remaining))
-            }
-            _ => None,
-        }
-    }
-
-    /// Format the agent list for a route_key, showing aliases and available agents.
-    fn format_agent_list(&self, route_key: &str) -> String {
-        let agents = self.kernel.list_agents();
-        let mut lines = Vec::new();
-
-        if let Some(ref router) = self.sender_router {
-            // Only the clones THIS sender installed — not the global agent registry.
-            let clones = router.list_clones(route_key);
-            let current_agent = router.get_route(route_key);
-
-            lines.push("你的助手：".to_string());
-            for (agent_id, entry) in &clones {
-                // Router keys clones by English name; AgentInfo.name is the same
-                // English name (AgentInfo.id is a UUID and must NOT be used here).
-                let display_name = agents
-                    .iter()
-                    .find(|a| &a.name == agent_id)
-                    .map(|a| a.display_name.clone())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| agent_id.clone());
-                // alias = the personal name the sender gave this clone ("起的名字")
-                let alias = if entry.alias.is_empty() {
-                    "-".to_string()
-                } else {
-                    entry.alias.clone()
-                };
-                let is_current = current_agent.as_ref() == Some(agent_id);
-                let marker = if is_current { " ★" } else { "" };
-                // 起的名字 | 显示的中文名 | 分身id(英文)
-                lines.push(format!("  {alias} | {display_name} | {agent_id}{marker}"));
-            }
-        } else {
-            lines.push("助手列表：".to_string());
-            for agent in &agents {
-                let display = if agent.display_name.is_empty() {
-                    agent.name.clone()
-                } else {
-                    agent.display_name.clone()
-                };
-                lines.push(format!("  - | {} | {}", display, agent.name));
-            }
-        }
-
-        lines.push(String::new());
-        lines.push("提示：直接叫助手名字就能对话，比如\"小明，帮我查一下\"".to_string());
-
-        lines.join("\n")
     }
 
     /// Resolve which agent handles a message via route_key routing.

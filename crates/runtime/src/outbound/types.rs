@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use carrier_types::channel::RoutingMode;
 use carrier_types::error::CarrierResult;
 
 /// A function that can send a response through a channel.
@@ -16,11 +15,6 @@ pub type ChannelSendFn = Arc<dyn Fn(&str, &str, &str, &str) -> CarrierResult<()>
 pub type ChannelDeliverFn = Arc<
     dyn Fn(&str, &str, &str, &carrier_types::content::ContentDescriptor) -> CarrierResult<()> + Send + Sync,
 >;
-
-/// A function that reports a channel+bot routing mode.
-/// `(channel_type, bot_id)` — bot_id lets mixed channels (wecom kf vs SmartBot)
-/// pick DirectBind per sender.
-pub type RoutingModeFn = Arc<dyn Fn(&str, &str) -> RoutingMode + Send + Sync>;
 
 /// Where to push a notification of a given type.
 ///

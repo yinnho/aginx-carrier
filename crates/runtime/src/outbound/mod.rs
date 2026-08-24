@@ -22,7 +22,7 @@ pub use deliver::process_deliver_markers_pub;
 pub use pipeline::{prepare_outbound, OutboundCtx, OutboundResult};
 pub use publish::process_publish_markers;
 pub use silence::{is_no_reply_sentinel, sanitize_wechat_text};
-pub use types::{ChannelDeliverFn, ChannelSendFn, NotifyTarget, RoutingModeFn};
+pub use types::{ChannelDeliverFn, ChannelSendFn, NotifyTarget};
 
 #[cfg(test)]
 mod tests {

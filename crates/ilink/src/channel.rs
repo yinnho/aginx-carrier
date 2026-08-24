@@ -471,9 +471,9 @@ async fn process_inbound_message(
 // SessionWatcher — monitors for new bots added after plugin startup
 // ---------------------------------------------------------------------------
 
-/// Dynamic session watcher that starts poll threads for bots and handles
-/// respawn of inactive-but-valid sessions. New bots are started via
-/// `start_sender()` (event-driven), not polling.
+/// Dynamic session watcher: reloads sessions from DB/disk each cycle
+/// (picking up new `qr-login` bindings without a restart) and respawns
+/// poll threads for inactive-but-valid bots.
 pub struct SessionWatcher {
     shutdown: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -687,39 +687,6 @@ impl Channel for SessionWatcher {
         info!("SessionWatcher stopped");
     }
 
-    fn start_sender(
-        &self,
-        sender_id: &str,
-        sender: mpsc::Sender<PluginMessage>,
-    ) -> CarrierResult<()> {
-        WEIXIN_STATE.load_new_from_dir();
-        // Force-spawn poll thread regardless of active flag.
-        // register_from_qr sets active=true, which causes spawn_bot_by_id to skip,
-        // but the poll thread hasn't been started yet at that point.
-        if let Some(state) = WEIXIN_STATE.bots.get(sender_id) {
-            if state.is_expired() {
-                warn!(sender_id = %sender_id, "WeChat: session expired, not starting poll");
-                return Ok(());
-            }
-            state.active.store(true, Ordering::Relaxed);
-            let s = sender.clone();
-            let poll_key = sender_id.to_string();
-            info!(user_id = %sender_id, "Spawning poll thread for new sender");
-            if let Err(e) = std::thread::Builder::new()
-                .name(format!("weixin-dyn-{sender_id}"))
-                .spawn(move || {
-                    let shutdown = Arc::new(AtomicBool::new(false));
-                    run_poll_loop(&poll_key, s, &shutdown);
-                })
-            {
-                error!(user_id = %sender_id, "Failed to spawn poll thread: {e}");
-            }
-        } else {
-            warn!(sender_id = %sender_id, "WeChat: sender not found in bots after load");
-        }
-        info!(sender_id = %sender_id, "WeChat: started new sender");
-        Ok(())
-    }
 }
 
 /// Spawn poll threads for all bots that are loaded but not yet active.
@@ -768,6 +735,12 @@ fn respawn_watcher_loop(sender: mpsc::Sender<PluginMessage>, shutdown: Arc<Atomi
                 info!("Respawn watcher shutdown signal received");
                 return;
             }
+
+            // Pick up sessions that appeared since the last cycle — one-shot
+            // `qr-login` writes session.json in its own process; DB rows can
+            // also change. Without this, a new binding is invisible until a
+            // daemon restart.
+            WEIXIN_STATE.load_new_from_dir();
 
             for entry in WEIXIN_STATE.bots.iter() {
                 let user_id = entry.key().clone();
