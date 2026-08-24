@@ -18,7 +18,8 @@ pub fn run(bot_id: String) -> anyhow::Result<()> {
     let on_qr = |url: &str| {
         println!("\n微信扫码登录（bot_id={bot_id}）：\n");
         print_ascii_qr(url);
-        println!("\n↑ 用微信扫上面的码（8 分钟超时，过期自动刷新）");
+        println!("\n手机浏览器打开此链接同样生效（E2E 验证过的形态）: {url}");
+        println!("↑ 扫码或点链接均可（8 分钟超时，过期自动刷新）");
         // stdout 走管道（ssh 重定向）时是块缓冲——不 flush 二维码出不来
         let _ = std::io::Write::flush(&mut std::io::stdout());
     };
