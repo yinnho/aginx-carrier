@@ -221,24 +221,49 @@ pub fn weixin_row_to_token_file(
     }
 }
 
-/// Read `weixin-sessions/*.json` token files and register
-/// user_id/bot_id → bind_agent sender routes for inbound routing.
+/// Read weixin token files and register user_id → bind_agent sender routes
+/// for inbound routing.
+///
+/// 会话真源是 `senders/<uid>/session.json`（save_session 的落点）；
+/// `weixin-sessions/` 是 opencarrier 老目录——保留兼容一拍（有旧文件
+/// 仍生效），新文件只认 senders/。曾长期只扫老目录：扫码绑定的
+/// bind_agent 路由从未注册，新扫码用户消息一律 "No agent resolved" 丢弃。
 fn register_token_file_bindings(kernel: &Arc<CarrierKernel>, cm: &ChannelManager) {
-    let token_dir = kernel.config.home_dir.join("weixin-sessions");
-    let Ok(entries) = std::fs::read_dir(&token_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+    let home = kernel.config.home_dir.clone();
+    let mut token_files: Vec<std::path::PathBuf> = Vec::new();
+    // 新位置：senders/<uid>/session.json
+    if let Ok(sender_entries) = std::fs::read_dir(home.join("senders")) {
+        for entry in sender_entries.flatten() {
+            let session = entry.path().join("session.json");
+            if session.is_file() {
+                token_files.push(session);
+            }
         }
+    }
+    // 老位置：weixin-sessions/*.json（兼容）
+    if let Ok(entries) = std::fs::read_dir(home.join("weixin-sessions")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                token_files.push(path);
+            }
+        }
+    }
+    for path in token_files {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
         };
         let Ok(tf) = serde_json::from_str::<serde_json::Value>(&content) else {
             continue;
         };
+        // 新文件恒有 channel:"weixin"；老文件可能缺字段——缺省放行（老目录
+        // 本来就只有 weixin 会话），明确非 weixin 的才拒。
+        if tf.get("channel")
+            .and_then(|v| v.as_str())
+            .is_some_and(|c| c != "weixin")
+        {
+            continue;
+        }
         let (Some(bot_id), Some(agent)) = (
             tf.get("bot_id").and_then(|v| v.as_str()),
             tf.get("bind_agent").and_then(|v| v.as_str()),

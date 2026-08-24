@@ -9,7 +9,7 @@
 
 use carrier_ilink::auth;
 
-pub fn run(bot_id: String) -> anyhow::Result<()> {
+pub fn run(bot_id: String, bind_agent: Option<String>) -> anyhow::Result<()> {
     let http = carrier_ilink::build_http_client();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -23,7 +23,12 @@ pub fn run(bot_id: String) -> anyhow::Result<()> {
         // stdout 走管道（ssh 重定向）时是块缓冲——不 flush 二维码出不来
         let _ = std::io::Write::flush(&mut std::io::stdout());
     };
-    let msg = runtime.block_on(auth::qr_login(&http, &bot_id, None, Some(&on_qr)))?;
+    let msg = runtime.block_on(auth::qr_login(
+        &http,
+        &bot_id,
+        bind_agent.as_deref(),
+        Some(&on_qr),
+    ))?;
     println!("\n{msg}");
     Ok(())
 }
