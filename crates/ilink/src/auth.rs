@@ -27,6 +27,7 @@ pub async fn qr_login(
     http: &Client,
     bot_id: &str,
     bind_agent: Option<&str>,
+    on_qr: Option<&dyn Fn(&str)>,
 ) -> CarrierResult<String> {
     let mut base_url = ILINK_API_BASE.to_string();
     let mut refresh_count = 0;
@@ -46,6 +47,9 @@ pub async fn qr_login(
         let qr_url = qr_resp.qrcode_img_content.clone();
 
         info!(qr_url = %qr_url, "QR code generated, waiting for scan");
+        if let Some(cb) = on_qr {
+            cb(&qr_url);
+        }
 
         // Step 2: Poll QR status
         let poll_base = base_url.clone();

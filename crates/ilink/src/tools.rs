@@ -36,7 +36,7 @@ impl ToolProvider for WeixinQrLoginTool {
             .map_err(|e| PluginToolError::tool(format!("Runtime error: {e}")))?;
 
         let bot = bot_id.clone();
-        let result = rt.block_on(async { auth::qr_login(&http, &bot, None).await });
+        let result = rt.block_on(async { auth::qr_login(&http, &bot, None, None).await });
 
         result.map_err(|e| PluginToolError::tool(e.to_string()))
     }

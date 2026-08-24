@@ -34,3 +34,4 @@ carrier-ilink = { workspace = true }
 carrier-webhook = { workspace = true }
 carrier-webui = { workspace = true }
 uuid = { workspace = true }
+qrcode = "0.14"
