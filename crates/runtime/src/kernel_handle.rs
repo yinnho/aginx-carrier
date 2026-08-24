@@ -244,17 +244,6 @@ pub trait KernelHandle: Send + Sync {
         Ok(None)
     }
 
-    /// Generate an image via the Brain's image modality and save it to `out_dir`.
-    ///
-    /// Used by the reliable publish handler (AI+API path) to produce a cover
-    /// image deterministically, without the agent driving a tool chain. Returns
-    /// the saved file path on success.
-    async fn generate_image_to_file(&self, _prompt: &str, _out_dir: &str) -> CarrierResult<String> {
-        Err(CarrierError::Internal(
-            "image generation not available on this kernel".into(),
-        ))
-    }
-
     /// Get the home directory path (~/.aginx/carrier/).
     fn home_dir(&self) -> Option<std::path::PathBuf> {
         None

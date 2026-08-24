@@ -11,7 +11,7 @@
 /// and identity files, so the same flow works for 86巴士, a calligraphy clone,
 /// a writer clone, etc. The cron message (set by the reconciler) tells each
 /// turn whether to run `mode=learn` (all enabled clones) or
-/// `mode=create app_id=…` (OA-bound clones only; create branch is draft-only).
+/// （create 分支已随公众号渠道退役移除。）
 ///
 /// The prompt is deliberately **restrictive**: self-growth may only ADD new
 /// knowledge gained from external research, never edit existing files. This
@@ -24,7 +24,7 @@
 /// at wrap-up (2026-08-14).
 pub const DEFAULT_SELF_GROWTH_FLOW: &str = r#"---
 name: self-growth
-description: 自主成长（空闲时自动学习/创作）。由 self-growth cron 触发，mode 由系统消息给出（learn=只学习；create app_id=xxx=写公众号草稿）。学习=去网上搜本领域新信息→追加新知识；绝不整理/修复/改写既有文件。创作=写新文章建草稿。严格遵守下方铁红线。
+description: 自主成长（空闲时自动学习）。由 self-growth cron 触发。学习=去网上搜本领域新信息→追加新知识；绝不整理/修复/改写既有文件。严格遵守下方铁红线。
 version: 2
 max_iterations: 12
 tools: [system_time, web_search, web_fetch, knowledge_list, knowledge_read, knowledge_add, file_read, file_write]
@@ -32,16 +32,14 @@ tools: [system_time, web_search, web_fetch, knowledge_list, knowledge_read, know
 
 # 自主成长
 
-系统消息给了你 `mode`：
-- `mode=learn` → 本轮**学习**：去网上搜你领域的新信息，追加成新知识。
-- `mode=create app_id=wxXXX` → 本轮**创作**：写一篇公众号文章草稿。
+系统消息给了你 `mode=learn`：本轮**学习**——去网上搜你领域的新信息，追加成新知识。
+（发布/创作模式已随公众号渠道退役移除；需要时随 OA 渠道回归再恢复。）
 
 ## 🚫 铁红线（绝对禁止，违反即失败）
 
 1. **学习 ≠ 整理/修复/审计**。学习是**去网上**（`web_search`/`web_fetch`）搜你领域里你还不知道的**新**信息。**不是**读现有 knowledge 去改进它、合并它、修过时内容——那些一律禁止。
 2. **只能新建 knowledge，绝不改既有**。往知识库加东西**只能用 `knowledge_add` 新建文件**。**绝不修改、重写、重命名、删除**任何既有 knowledge 文件（哪怕你觉得它过时/有错——那不是自主成长该干的，留给人工）。
-3. **`file_write` 只许写两个地方**：
-   - `output/{tid}/正文.html`（创作正文，仅 mode=create）
+3. **`file_write` 只许写一个地方**：
    - `flows/self-growth/log.md`（成长日志，追加一行）
    **严禁**写任何其他路径。**尤其严禁**：改 `flows/` 下任何文件、改任何既有 flow（如 daily-admin-brief）、`flow_update`、改 `knowledge/` 下任何文件、改 SOUL/system_prompt/EVOLUTION 等身份/配置文件。
 4. **读 knowledge/ 只读不改**。读它只为两件事：(a) 搞清你的领域好搜对关键词；(b) 判断搜到的新信息是不是已经有了。**绝不为"改进"而读。**
@@ -57,24 +55,9 @@ tools: [system_time, web_search, web_fetch, knowledge_list, knowledge_read, know
 6. 搜不到有用的就如实记"无新知"，**不要硬凑、不要改既有文件**。
 7. 追加一行到 `flows/self-growth/log.md`（`file_write` 追加，格式 `- YYYY-MM-DD 学: <一句话或"无新知">`）。
 
-## 创作分支（mode=create）
-
-1. 用 `system_time` 取今天日期。读 `flows/self-growth/log.md` 看上次创作时间。
-2. 从 `knowledge/` 挑**一个对关注者真正有用**的主题。想不出有用主题 → 直接转学习分支（第 2-7 步），**不要硬写**。
-3. 把正文写到 `output/{tid}/正文.html`（`file_write`，完整 HTML，公众号排版；`{tid}` = 本轮 task_id）。
-4. 回复正文发标记（系统自动剥离、建**草稿**，不自动发）：
-
-   ```
-   [PUBLISH:app_id]output/{tid}/正文.html|文章标题|一句摘要[/PUBLISH]
-   ```
-
-   `app_id` 用消息里的 wxXXX。
-5. 追加一行到 `flows/self-growth/log.md`：`- YYYY-MM-DD 写: <标题>`。
-
 ## 输出
 
-- 学习轮：回复简述本轮学了啥（1-3 行），**不要**发 `[PUBLISH]` 标记。
-- 创作轮：回复就是带 `[PUBLISH]` 标记的发布指令 + 一句说明。
+- 回复简述本轮学了啥（1-3 行）。
 - 不要调 message_push/send 类工具，不要给用户推消息。
 "#;
 

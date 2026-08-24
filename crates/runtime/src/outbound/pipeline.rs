@@ -9,16 +9,13 @@ use crate::kernel_handle::KernelHandle;
 
 use super::deliver::process_deliver_markers_pub;
 use super::notify::process_notify_markers;
-use super::publish::process_publish_markers;
 use super::silence::{is_no_reply_sentinel, sanitize_wechat_text};
 use super::types::{ChannelDeliverFn, ChannelSendFn, NotifyTarget};
 
 /// Inputs for [`prepare_outbound`]. Callers choose interactive vs cron behaviour
 /// via `process_notify` and `sanitize_wechat` (cron keeps both false).
 pub struct OutboundCtx<'a> {
-    /// Required for `[PUBLISH]` side effects. When `None`, PUBLISH markers are
-    /// still stripped (via an empty-kernel skip) — callers that need publish
-    /// must pass a handle.
+    /// Used to resolve `admins` notify recipients via sender_channels.
     pub kernel: Option<Arc<dyn KernelHandle>>,
     pub send_fn: Option<ChannelSendFn>,
     pub deliver_fn: Option<ChannelDeliverFn>,
@@ -26,10 +23,6 @@ pub struct OutboundCtx<'a> {
     pub channel_type: &'a str,
     pub bot_id: &'a str,
     pub sender_id: &'a str,
-    /// Agent **name** used as `workspaces/<agent_id>/…` path segment (e.g.
-    /// `ai-writer`). Must not be the UUID `AgentId` string — profile / PUBLISH
-    /// secret lookup and HTML paths all join under the name-based workspace.
-    pub agent_id: &'a str,
     /// Interactive only: process `[NOTIFY:…]` markers.
     pub process_notify: bool,
     pub notify_routes: Option<&'a HashMap<String, NotifyTarget>>,
@@ -53,10 +46,9 @@ pub struct OutboundResult {
 /// should be sent:
 ///
 /// 1. NOTIFY (if `process_notify`)
-/// 2. PUBLISH
-/// 3. DELIVER
-/// 4. silence / empty → `suppress_text_send`
-/// 5. optional WeChat sanitize on remaining text (does not affect suppress)
+/// 2. DELIVER
+/// 3. silence / empty → `suppress_text_send`
+/// 4. optional WeChat sanitize on remaining text (does not affect suppress)
 pub async fn prepare_outbound(response: &str, ctx: OutboundCtx<'_>) -> OutboundResult {
     let mut text = response.to_string();
 
@@ -74,20 +66,7 @@ pub async fn prepare_outbound(response: &str, ctx: OutboundCtx<'_>) -> OutboundR
         );
     }
 
-    // 2. PUBLISH
-    if let Some(kernel) = ctx.kernel {
-        text = process_publish_markers(
-            kernel,
-            ctx.send_fn.clone(),
-            ctx.channel_type,
-            ctx.bot_id,
-            ctx.sender_id,
-            ctx.agent_id,
-            &text,
-        );
-    }
-
-    // 3. DELIVER
+    // 2. DELIVER
     text = process_deliver_markers_pub(
         ctx.deliver_fn,
         ctx.content,
@@ -98,7 +77,7 @@ pub async fn prepare_outbound(response: &str, ctx: OutboundCtx<'_>) -> OutboundR
     )
     .await;
 
-    // 4. Suppress final text send for empty replies or no-reply sentinels.
+    // 3. Suppress final text send for empty replies or no-reply sentinels.
     //    Marker side effects above have already run.
     let suppress_text_send = text.trim().is_empty() || is_no_reply_sentinel(&text);
     if suppress_text_send {
@@ -116,7 +95,7 @@ pub async fn prepare_outbound(response: &str, ctx: OutboundCtx<'_>) -> OutboundR
         };
     }
 
-    // 5. Optional WeChat sanitize (only for text that will be sent).
+    // 4. Optional WeChat sanitize (only for text that will be sent).
     if ctx.sanitize_wechat {
         text = sanitize_wechat_text(&text);
     }

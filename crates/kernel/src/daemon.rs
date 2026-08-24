@@ -15,13 +15,13 @@ use carrier_runtime::kernel_handle::KernelHandle;
 
 // ── Cron delivery helper ───────────────────────────────────
 
-/// Filesystem / profile key for outbound side-effects (PUBLISH profile lookup,
-/// HTML/cover paths under `workspaces/<key>/senders/...`, content.toml cache).
+/// Filesystem / profile key for outbound side-effects (HTML/cover paths under
+/// `workspaces/<key>/senders/...`, content.toml cache).
 ///
 /// Must be the agent **name** (e.g. `ai-writer`), never `AgentId` UUID string.
 /// Interactive bridge routes already store names; cron jobs only have UUID and
-/// must resolve here — otherwise `read_wechat_app_secret` looks under a
-/// non-existent `workspaces/<uuid>/` and reports a false "app_secret missing".
+/// must resolve here — otherwise workspace paths join under a non-existent
+/// `workspaces/<uuid>/`.
 fn outbound_agent_key(kernel: &CarrierKernel, agent_id: AgentId) -> String {
     match kernel.registry.get(agent_id) {
         Some(entry) => entry.name,
@@ -29,7 +29,7 @@ fn outbound_agent_key(kernel: &CarrierKernel, agent_id: AgentId) -> String {
             warn!(
                 %agent_id,
                 "Cron outbound: agent not in registry; falling back to UUID \
-                 (profile/PUBLISH paths will likely fail)"
+                 (workspace paths will likely fail)"
             );
             agent_id.to_string()
         }
@@ -446,36 +446,6 @@ pub(super) async fn cron_fire_job(kernel: &Arc<CarrierKernel>, job: CronJob) -> 
     }
 }
 
-/// Should an OA-bound clone run the *create* branch this cycle?
-///
-/// Returns true when the most recent `写:` entry in the clone's self-growth log
-/// is older than the cooldown (or there is none). Date strings compare
-/// lexically (YYYY-MM-DD sorts chronologically), avoiding date arithmetic.
-fn self_growth_should_create(workspace: &std::path::Path) -> bool {
-    const COOLDOWN_DAYS: i64 = 3;
-    let cutoff = (chrono::Utc::now() - chrono::Duration::days(COOLDOWN_DAYS))
-        .format("%Y-%m-%d")
-        .to_string();
-    let log = workspace.join("flows/self-growth/log.md");
-    let Ok(content) = std::fs::read_to_string(&log) else {
-        return true; // no log yet → free to create
-    };
-    let mut latest_create: Option<&str> = None;
-    for line in content.lines() {
-        if line.contains("写:") || line.contains("写：") {
-            let t = line.trim_start_matches(|c: char| c == '-' || c.is_whitespace());
-            if t.len() >= 10 {
-                latest_create = Some(&t[..10]); // keep scanning; last one wins (latest)
-            }
-        }
-    }
-    match latest_create {
-        // create if the latest draft predates the cutoff
-        Some(d) => d < cutoff.as_str(),
-        None => true,
-    }
-}
-
 /// Deliver a cron job's agent response to the configured delivery target.
 ///
 /// - `None`: silent — no notification sent
@@ -498,17 +468,11 @@ pub(super) async fn cron_deliver_response(
         return Ok(());
     }
 
-    // Same outbound pipeline as the interactive bridge (PUBLISH + DELIVER +
-    // no-reply suppress). Cron intentionally skips NOTIFY and WeChat sanitize.
+    // Same outbound pipeline as the interactive bridge (DELIVER + no-reply
+    // suppress). Cron intentionally skips NOTIFY and WeChat sanitize.
     //
-    // Use agent **name** (not UUID) for workspace/profile paths — see
+    // Use agent **name** (not UUID) for workspace/content paths — see
     // [`outbound_agent_key`].
-    //
-    // Publish/outbound sender is the job's `sender_id` when present (per-user
-    // credentials in `preferences.wechat_accounts` are keyed by sender_id),
-    // falling back to `owner_id` for jobs created without an explicit sender
-    // (interactive chains set both to the openid; API/system jobs may set only
-    // one — resolving sender from owner alone broke credential lookup).
     let sender_id = sender_id.or(owner_id).unwrap_or("");
     let (pchannel, pbot, psend_fn) = cron_publish_followup_target(kernel, sender_id);
     let deliver_fn = kernel
@@ -531,7 +495,6 @@ pub(super) async fn cron_deliver_response(
             channel_type: &pchannel,
             bot_id: &pbot,
             sender_id,
-            agent_id: &agent_name,
             process_notify: false,
             notify_routes: None,
             admin_sender_ids: &[],
@@ -679,13 +642,12 @@ fn is_stranded(
             .is_some_and(|t| t > now + chrono::Duration::days(365 * 50))
 }
 
-/// Best-effort channel target for a cron publish *follow-up* notification.
+/// Best-effort channel target for the cron outbound pipeline.
 ///
-/// The publish draft itself is created via the kernel/WeChat API and needs no
-/// channel; this only routes the post-publish success/failure message. Returns
-/// the sender's last known `(channel_type, bot_id)` if we have one, plus the
-/// channel send fn. When there's no known channel the follow-up is skipped
-/// (empty strings) but publishing still proceeds.
+/// Resolves the sender's last known `(channel_type, bot_id)` so DELIVER and
+/// the reply text land on the channel the user last talked to us on, plus the
+/// channel send fn. When there's no known channel the fields are empty but
+/// the pipeline still runs.
 fn cron_publish_followup_target(
     kernel: &Arc<CarrierKernel>,
     sender_id: &str,
@@ -1033,21 +995,6 @@ impl CarrierKernel {
             return;
         }
 
-        // Map clone-name → OA app_id for clones with a weixin-oa sender bound.
-        // (bind_agent in the sender session holds the agent name; the sender
-        // dir name is the app_id.)
-        let mut oa_bound: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for (app_id, json) in carrier_types::config::scan_sender_sessions(&self.config.home_dir) {
-            if json.get("channel").and_then(|v| v.as_str()) == Some("weixin-oa") {
-                if let Some(bind) = json.get("bind_agent").and_then(|v| v.as_str()) {
-                    oa_bound
-                        .entry(bind.to_string())
-                        .or_insert_with(|| app_id.clone());
-                }
-            }
-        }
-
         let mut changed = false;
         for entry in self.registry.list() {
             if entry.manifest.clone_source.is_none() {
@@ -1077,22 +1024,10 @@ impl CarrierKernel {
                 continue;
             }
 
-            // Enabled — compute desired mode + schedule + message.
-            let (can_publish, app_id) = match oa_bound.get(&clone_name) {
-                Some(aid) => (true, aid.clone()),
-                None => (false, String::new()),
-            };
-            let mode = if can_publish && self_growth_should_create(workspace) {
-                "create"
-            } else {
-                "learn"
-            };
+            // Enabled — compute desired schedule + message.（OA 发布模式已随
+            // weixin-oa 渠道退役移除：成长只学习不出稿，需要时随 OA 渠道回归。）
             let interval_secs = cfg.self_growth_interval_hours.saturating_mul(3600).max(60);
-            let message = if can_publish {
-                format!("自主成长。mode={mode} app_id={app_id}")
-            } else {
-                "自主成长。mode=learn".to_string()
-            };
+            let message = "自主成长。mode=learn".to_string();
             let desired_schedule = carrier_types::scheduler::CronSchedule::Every {
                 every_secs: interval_secs,
             };
@@ -1734,7 +1669,7 @@ mod tests {
         }
     }
 
-    /// Contract: cron must resolve AgentId → name before PUBLISH profile lookup.
+    /// Contract: cron must resolve AgentId → name before workspace path joins.
     /// Interactive routes store names; UUID must never become the workspaces/ segment.
     #[test]
     fn outbound_agent_key_contract_name_not_uuid() {

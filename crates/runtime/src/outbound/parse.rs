@@ -1,4 +1,4 @@
-//! Parsing for agent reply markers: NOTIFY, PUBLISH, DELIVER.
+//! Parsing for agent reply markers: NOTIFY, DELIVER.
 
 /// A parsed `[DELIVER:key|field=value|...]` marker. The key resolves a base
 /// [`carrier_types::content::ContentDescriptor`] from the agent's `content.toml`;
@@ -57,28 +57,6 @@ pub(crate) fn parse_markers(
 /// Parse `[NOTIFY:type]content[/NOTIFY]` markers from agent reply text.
 pub(crate) fn parse_notify_markers(text: &str) -> (Vec<(String, String)>, String) {
     parse_markers(text, "[NOTIFY:", "[/NOTIFY]")
-}
-
-/// Parse `[PUBLISH:app_id]html_path[/PUBLISH]` markers from agent reply text.
-/// Triggers the reliable publish handler (cover → draft → publish) for each.
-pub(crate) fn parse_publish_markers(text: &str) -> (Vec<(String, String)>, String) {
-    parse_markers(text, "[PUBLISH:", "[/PUBLISH]")
-}
-
-/// Parse PUBLISH content: "html_path|title|digest" where title and digest are optional.
-/// Returns (html_path, optional_title, optional_digest).
-pub(crate) fn parse_publish_content(content: &str) -> (String, Option<String>, Option<String>) {
-    let parts: Vec<&str> = content.splitn(3, '|').collect();
-    let html_path = parts.first().unwrap_or(&"").trim().to_string();
-    let title = parts
-        .get(1)
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string());
-    let digest = parts
-        .get(2)
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string());
-    (html_path, title, digest)
 }
 
 /// Find the first occurrence of ASCII `c` in `s` not preceded by a `\`.

@@ -1,9 +1,9 @@
 //! Outbound reply processing: markers, silence, content registry, and pipeline.
 //!
-//! Agent replies may embed side-effect markers (`[PUBLISH]`, `[DELIVER]`,
-//! `[NOTIFY]`) and no-reply sentinels. This module owns the parsing and
-//! processing of those markers so both the interactive bridge path and the
-//! cron delivery path share one implementation via [`prepare_outbound`].
+//! Agent replies may embed side-effect markers (`[DELIVER]`, `[NOTIFY]`) and
+//! no-reply sentinels. This module owns the parsing and processing of those
+//! markers so both the interactive bridge path and the cron delivery path
+//! share one implementation via [`prepare_outbound`].
 //!
 //! `plugin::bridge` re-exports the public API for backward-compatible import
 //! paths (`runtime::plugin::bridge::process_*`).
@@ -13,21 +13,19 @@ mod deliver;
 mod notify;
 mod parse;
 mod pipeline;
-mod publish;
 mod silence;
 mod types;
 
 pub use content::ContentRegistry;
 pub use deliver::process_deliver_markers_pub;
 pub use pipeline::{prepare_outbound, OutboundCtx, OutboundResult};
-pub use publish::process_publish_markers;
 pub use silence::{is_no_reply_sentinel, sanitize_wechat_text};
 pub use types::{ChannelDeliverFn, ChannelSendFn, NotifyTarget};
 
 #[cfg(test)]
 mod tests {
     use super::is_no_reply_sentinel;
-    use super::parse::{parse_deliver_markers, parse_publish_markers};
+    use super::parse::parse_deliver_markers;
 
     #[test]
     fn detects_no_reply_sentinels() {
@@ -57,29 +55,6 @@ mod tests {
         ));
         assert!(!is_no_reply_sentinel(""));
         assert!(!is_no_reply_sentinel("ok"));
-    }
-
-    #[test]
-    fn publish_markers_are_stripped_from_text() {
-        // process_publish_markers must strip [PUBLISH] markers so the cron path
-        // delivers clean text (and the interactive path doesn't leak markers).
-        // We test the underlying parse, since the spawn needs a live kernel.
-        let (publishes, cleaned) = parse_publish_markers(
-            "文章已写好\n[PUBLISH:wxc8fbad41f075853c]output/x/正文.html[/PUBLISH]\n结尾",
-        );
-        assert_eq!(publishes.len(), 1);
-        assert_eq!(publishes[0].0, "wxc8fbad41f075853c");
-        assert_eq!(publishes[0].1, "output/x/正文.html");
-        assert!(
-            !cleaned.contains("PUBLISH"),
-            "marker must be stripped: {cleaned}"
-        );
-        assert!(cleaned.contains("文章已写好") && cleaned.contains("结尾"));
-
-        // No markers → text unchanged.
-        let (none, same) = parse_publish_markers("plain reply");
-        assert!(none.is_empty());
-        assert_eq!(same, "plain reply");
     }
 
     #[test]

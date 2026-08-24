@@ -147,9 +147,9 @@ async fn verify_evidence_cron_claims(
     ))
 }
 
-/// Verbatim side-effect marker spans in `text`: `[PUBLISH:…]…[/PUBLISH]`,
-/// `[NOTIFY:…]…[/NOTIFY]`, and single-tag `[DELIVER:key|f=v]` (body ends at
-/// the first `]` not preceded by a backslash, mirroring the outbound parser).
+/// Verbatim side-effect marker spans in `text`: `[NOTIFY:…]…[/NOTIFY]` and
+/// single-tag `[DELIVER:key|f=v]` (body ends at the first `]` not preceded by a
+/// backslash, mirroring the outbound parser).
 /// Used by the report gate to carry markers through the human-message swap.
 /// Deduplicated, order of first appearance.
 fn side_effect_marker_spans(text: &str) -> Vec<String> {
@@ -159,7 +159,7 @@ fn side_effect_marker_spans(text: &str) -> Vec<String> {
             out.push(span);
         }
     };
-    for (open, close) in [("[PUBLISH:", "[/PUBLISH]"), ("[NOTIFY:", "[/NOTIFY]")] {
+    for (open, close) in [("[NOTIFY:", "[/NOTIFY]")] {
         let mut rest = text;
         while let Some(i) = rest.find(open) {
             let after = &rest[i..];
@@ -396,13 +396,12 @@ pub(in crate::agent_loop) async fn handle_end_turn(
             Ok(()) => {
                 // The report JSON is for the orchestrator; chat sinks get the
                 // human-readable `message` field when the agent provided one.
-                // Side-effect markers ([PUBLISH]/[NOTIFY]/[DELIVER]) usually
-                // live in the prose OUTSIDE the JSON — carry them through the
-                // swap verbatim, or their effects (draft creation, admin
-                // notify) silently never run (6b0b3a4 regression, caught
-                // 2026-08-17: chain publisher emitted [PUBLISH] but no draft
-                // was created — the outbound pipeline parses markers from the
-                // response text, which no longer contained it).
+                // Side-effect markers ([NOTIFY]/[DELIVER]) usually live in the
+                // prose OUTSIDE the JSON — carry them through the swap
+                // verbatim, or their effects (admin notify, rich delivery)
+                // silently never run (6b0b3a4 regression, caught 2026-08-17:
+                // markers were dropped — the outbound pipeline parses markers
+                // from the response text, which no longer contained them).
                 let markers = side_effect_marker_spans(&final_response);
                 if let Some(human) = parsed
                     .as_ref()
@@ -642,21 +641,18 @@ mod tests {
     }
 
     /// Markers must survive the report-gate human-message swap verbatim —
-    /// the 6b0b3a4 regression dropped them, so a chain publisher's
-    /// `[PUBLISH]` never reached the outbound pipeline (no draft created).
+    /// the 6b0b3a4 regression dropped them, so a marker never reached the
+    /// outbound pipeline (its effect silently never ran).
     #[test]
     fn side_effect_markers_extracted_verbatim() {
-        let text = "产物已���位，正在发布～\n\n[PUBLISH:wx4e35abcebe78a249]output/x/正文.html|标题|摘要[/PUBLISH]\n\n{\"status\":\"complete\",\"message\":\"已进入自动发布流程\"}";
+        let text = "产物已就位，正在投递～\n\n[NOTIFY:escalation]新工单[/NOTIFY]\n\n{\"status\":\"complete\",\"message\":\"已进入自动投递流程\"}";
         let spans = side_effect_marker_spans(text);
-        assert_eq!(
-            spans,
-            vec!["[PUBLISH:wx4e35abcebe78a249]output/x/正文.html|标题|摘要[/PUBLISH]".to_string()]
-        );
+        assert_eq!(spans, vec!["[NOTIFY:escalation]新工单[/NOTIFY]".to_string()]);
 
-        // All three marker kinds, multiple occurrences, order of appearance,
+        // Both marker kinds, multiple occurrences, order of appearance,
         // dedup of identical spans.
-        let mixed = "[NOTIFY:escalation]投诉[/NOTIFY]\n[DELIVER:yueka|user=o1]\n[NOTIFY:escalation]投诉[/NOTIFY]\n[PUBLISH:app2]p[/PUBLISH]";
-        assert_eq!(side_effect_marker_spans(mixed).len(), 3);
+        let mixed = "[NOTIFY:escalation]投诉[/NOTIFY]\n[DELIVER:yueka|user=o1]\n[NOTIFY:escalation]投诉[/NOTIFY]";
+        assert_eq!(side_effect_marker_spans(mixed).len(), 2);
 
         // Escaped ] inside a DELIVER body doesn't terminate the span early.
         assert_eq!(
@@ -667,7 +663,7 @@ mod tests {
         // No markers → empty (no re-append, human message stays alone).
         assert!(side_effect_marker_spans("普通回复，无标记").is_empty());
 
-        // Unterminated PUBLISH is ignored, same as the outbound parser.
-        assert!(side_effect_marker_spans("[PUBLISH:app]no close").is_empty());
+        // Unterminated NOTIFY is ignored, same as the outbound parser.
+        assert!(side_effect_marker_spans("[NOTIFY:app]no close").is_empty());
     }
 }

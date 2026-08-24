@@ -1205,33 +1205,6 @@ pub fn sanitize_path_component(s: &str) -> &str {
     }
 }
 
-/// Scan all senders/*/session.json files and return (sender_id, raw_json) pairs.
-///
-/// Each entry corresponds to a sender directory that has a session.json.
-/// The `channel` field in the JSON identifies which platform owns it.
-pub fn scan_sender_sessions(home_dir: &std::path::Path) -> Vec<(String, serde_json::Value)> {
-    let senders_dir = home_dir.join("senders");
-    let mut results = Vec::new();
-
-    let Ok(entries) = std::fs::read_dir(&senders_dir) else {
-        return results;
-    };
-
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let session_path = entry.path().join("session.json");
-        if session_path.exists() {
-            if let Ok(data) = std::fs::read_to_string(&session_path) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                    results.push((name, json));
-                }
-            }
-        }
-    }
-
-    results
-}
-
 /// Default LLM model configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

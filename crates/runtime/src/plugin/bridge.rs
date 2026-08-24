@@ -1,6 +1,6 @@
 //! Plugin bridge — routes messages between plugin channels and the kernel.
 //!
-//! Marker processing (PUBLISH / DELIVER / silence / WeChat sanitize) lives in
+//! Marker processing (DELIVER / silence / WeChat sanitize) lives in
 //! [`crate::outbound`]. This module owns inbound routing and the interactive
 //! `send_response` orchestrator; public types and marker helpers are re-exported
 //! here for backward-compatible import paths.
@@ -18,8 +18,8 @@ use crate::kernel_handle::KernelHandle;
 // Re-export outbound types and marker APIs so existing
 // `runtime::plugin::bridge::…` imports keep compiling.
 pub use crate::outbound::{
-    is_no_reply_sentinel, prepare_outbound, process_deliver_markers_pub, process_publish_markers,
-    ChannelDeliverFn, ChannelSendFn, ContentRegistry, NotifyTarget, OutboundCtx, OutboundResult,
+    is_no_reply_sentinel, prepare_outbound, process_deliver_markers_pub, ChannelDeliverFn,
+    ChannelSendFn, ContentRegistry, NotifyTarget, OutboundCtx, OutboundResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -765,7 +765,6 @@ impl PluginBridgeManager {
                 channel_type: &original.channel_type,
                 bot_id: &original.bot_id,
                 sender_id: &original.sender_id,
-                agent_id: &agent_id,
                 process_notify: true,
                 notify_routes: self.notify_routes.as_deref(),
                 admin_sender_ids: &admin_sender_ids,

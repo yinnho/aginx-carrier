@@ -824,94 +824,6 @@ impl KernelHandle for CarrierKernel {
         Ok(Some(dispatcher.execute(tool_name, args, context)?))
     }
 
-    async fn generate_image_to_file(&self, prompt: &str, out_dir: &str) -> CarrierResult<String> {
-        use base64::Engine;
-        let brain: Arc<dyn carrier_runtime::llm_driver::Brain> = Arc::clone(
-            &*self
-                .brain
-                .brain
-                .read()
-                .map_err(|e| CarrierError::Internal(format!("Brain lock: {e}")))?,
-        )
-            as Arc<dyn carrier_runtime::llm_driver::Brain>;
-
-        // Build an image-gen request (mirrors runtime/src/tools/media.rs).
-        let mut extra = serde_json::Map::new();
-        extra.insert("model".to_string(), serde_json::json!("dall-e-3"));
-        extra.insert("size".to_string(), serde_json::json!("1024x1024"));
-        extra.insert("quality".to_string(), serde_json::json!("hd"));
-        extra.insert("n".to_string(), serde_json::json!(1));
-        let request = CompletionRequest {
-            model: String::new(),
-            messages: vec![carrier_types::message::Message {
-                role: carrier_types::message::Role::User,
-                content: carrier_types::message::MessageContent::Text(prompt.to_string()),
-            }],
-            tools: vec![],
-            max_tokens: 0,
-            temperature: 0.0,
-            system: None,
-            thinking: None,
-            extra: serde_json::Value::Object(extra),
-        };
-
-        let response = brain
-            .complete("image", request)
-            .await
-            .map_err(|e| CarrierError::LlmDriver(format!("Image generation failed: {e}")))?;
-
-        let image = match response.media {
-            Some(carrier_types::media::MediaOutput::Images { items }) => {
-                items.into_iter().next().ok_or_else(|| {
-                    CarrierError::LlmDriver("image generation returned empty list".into())
-                })?
-            }
-            Some(carrier_types::media::MediaOutput::Image { data, .. }) => carrier_types::media::GeneratedImage {
-                data_base64: base64::engine::general_purpose::STANDARD.encode(&data),
-                url: None,
-            },
-            _ => {
-                return Err(CarrierError::LlmDriver(
-                    "image generation returned no media".into(),
-                ))
-            }
-        };
-
-        let bytes = if !image.data_base64.is_empty() {
-            base64::engine::general_purpose::STANDARD
-                .decode(&image.data_base64)
-                .map_err(|e| CarrierError::Internal(format!("decode image: {e}")))?
-        } else if let Some(url) = image.url {
-            reqwest::Client::new()
-                .get(&url)
-                .timeout(std::time::Duration::from_secs(60))
-                .send()
-                .await
-                .map_err(|e| CarrierError::Network(format!("download image: {e}")))?
-                .bytes()
-                .await
-                .map_err(|e| CarrierError::Network(format!("read image: {e}")))?
-                .to_vec()
-        } else {
-            return Err(CarrierError::Internal(
-                "image has neither base64 data nor url".into(),
-            ));
-        };
-
-        let out_dir = std::path::PathBuf::from(out_dir);
-        tokio::fs::create_dir_all(&out_dir).await?;
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let path = out_dir.join(format!("cover_{timestamp}.png"));
-        tokio::fs::write(&path, &bytes).await?;
-
-        let path_str = path.to_string_lossy().to_string();
-        tracing::info!(path = %path_str, bytes = bytes.len(), "Cover image generated");
-        Ok(path_str)
-    }
-
-    /// Trait-level delegate for the `clone_install` tool. Forwards to the inherent
-    /// `clone_install_files` method below (inherent resolution takes precedence,
-    /// so this calls the workspace-writing implementation, not recursion).
     async fn clone_install_files(
         &self,
         name: &str,
@@ -1466,7 +1378,7 @@ fn resolve_relative_at(mut schedule: serde_json::Value) -> CarrierResult<serde_j
 
 /// Chain identity validation for cron_create: chain_id is interpolated
 /// verbatim into the system prompt's output-dir template
-/// (output/{chain_id}/, [PUBLISH] markers), so it must be a single path-safe
+/// (output/{chain_id}/), so it must be a single path-safe
 /// segment - the same guarantee task_id gets from slugify. And the
 /// "pipeline:<id>" session_label convention must carry the SAME id: the
 /// prompt steers file output by chain_id while the turn runs in the

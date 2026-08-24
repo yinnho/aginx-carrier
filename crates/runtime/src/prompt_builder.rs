@@ -121,12 +121,12 @@ pub struct PromptContext {
     /// Drawer entries from kv memory — user profile, preferences, entities, events.
     pub drawer_entries: Vec<DrawerEntry>,
     /// Task ID assigned by the initiator (e.g. cron job). When present, the agent
-    /// must use this ID as the output directory and in PUBLISH markers, ensuring
-    /// file paths and publish paths are always consistent.
+    /// must use this ID as the output directory, ensuring file paths are always
+    /// consistent.
     pub task_id: Option<String>,
     /// Chained-pipeline ID (cron `chain.chain_id`). When present, the task_id is
-    /// NOT the pipeline identity: file output paths and PUBLISH markers must use
-    /// the chain_id instead, and task_id is only this turn's cron job label.
+    /// NOT the pipeline identity: file output paths must use the chain_id
+    /// instead, and task_id is only this turn's cron job label.
     pub chain_id: Option<String>,
 }
 
@@ -482,19 +482,18 @@ fn build_task_id_section(task_id: &str, chain_id: Option<&str>) -> String {
                  流水线 ID: {cid}（本任务属于链式流水线）"
             ),
             cid,
-            format!("1. 所有文件写入 output/{cid}/ 目录（用流水线 ID，不要用任务 ID），PUBLISH 标记路径也用 output/{cid}/ 开头"),
+            format!("1. 所有文件写入 output/{cid}/ 目录（用流水线 ID，不要用任务 ID）"),
         ),
         None => (
             format!("当前任务 ID: {task_id}"),
             task_id,
-            format!("1. 所有文件写入 output/{task_id}/ 目录，PUBLISH 标记路径也用 output/{task_id}/ 开头"),
+            format!("1. 所有文件写入 output/{task_id}/ 目录"),
         ),
     };
     format!(
         "## 任务 ID\n\
          {id_header}\n\
          文件输出目录: output/{output_id}/\n\
-         发布标记格式: [PUBLISH:app_id]output/{output_id}/正文.html|文章标题|摘要[/PUBLISH]\n\
          规则：\n\
          {rule1}\n\
          2. 不要把任务 ID 或流水线 ID 写入文章内容或文件开头--文章标题是文章的主题，不是任务 ID\n\
