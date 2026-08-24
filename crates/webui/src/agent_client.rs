@@ -39,6 +39,9 @@ pub struct AgentEndpoint {
     /// TLS SNI 域名
     pub tls_domain: String,
     pub relay_secret: Option<String>,
+    /// 网关层鉴权 token（bindDevice 配对所得，Bound 身份）。
+    /// 私有网关必须在 initialize 携带它才放行 prompt/listAgents。
+    pub auth_token: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -76,6 +79,15 @@ pub struct AgentPromptResult {
     pub num_turns: Option<u64>,
 }
 
+/// bindDevice 成功结果（§2.3 wire 形状，camelCase）。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoundDevice {
+    pub device_id: String,
+    pub device_name: String,
+    pub token: String,
+}
+
 impl AgentEndpoint {
     /// 解析 `agent://<id>.relay.<domain>[:port]`（relay 形态；direct 形态
     /// 待网关提供本地入站面后再补，client 只换连接方式）。
@@ -98,6 +110,7 @@ impl AgentEndpoint {
             port: explicit_port.unwrap_or(8443),
             tls_domain: format!("relay.{}", parts[1]),
             relay_secret: None,
+            auth_token: None,
         })
     }
 
@@ -140,6 +153,7 @@ impl AgentEndpoint {
             port: relay.port.unwrap_or(8443),
             tls_domain,
             relay_secret: relay.relay_secret,
+            auth_token: None,
         })
     }
 }
@@ -176,6 +190,8 @@ pub struct AgentConn {
     reader: BufReader<tokio::io::ReadHalf<ConnStream>>,
     writer: tokio::io::WriteHalf<ConnStream>,
     next_id: i64,
+    /// 网关层鉴权 token（来自端点，initialize 携带）
+    auth_token: Option<String>,
 }
 
 impl AgentConn {
@@ -210,6 +226,7 @@ impl AgentConn {
             reader: BufReader::new(r),
             writer: w,
             next_id: 1,
+            auth_token: ep.auth_token.clone(),
         };
 
         let mut connect_msg = json!({"type": "connect", "target": ep.target});
@@ -304,17 +321,45 @@ impl AgentConn {
         }
     }
 
-    /// 协议握手。public 网关无需 authToken。
-    pub async fn initialize(&mut self) -> Result<(), String> {
-        self.rpc(
-            "initialize",
-            json!({
-                "protocolVersion": "0.1.0",
-                "clientInfo": {"name": "aginx-carrier-webui", "version": "0.1.0"}
-            }),
-        )
-        .await
-        .map(|_| ())
+    /// 协议握手。返回 initialize 响应的 `authenticated`（token 是否被
+    /// 网关采信——注意 public 网关无 token 也全放行，此字段只反映鉴权
+    /// 状态不反映可用性）。token 放 `params.token`（网关兼容旧客户端
+    /// 的顶层字段，ACP.md §2.1）。
+    pub async fn initialize(&mut self) -> Result<bool, String> {
+        let mut params = json!({
+            "protocolVersion": "0.1.0",
+            "clientInfo": {"name": "aginx-carrier-webui", "version": "0.1.0"}
+        });
+        if let Some(ref token) = self.auth_token {
+            params["token"] = json!(token);
+        }
+        let resp = self.rpc("initialize", params).await?;
+        Ok(resp
+            .pointer("/result/authenticated")
+            .and_then(|v| v.as_bool())
+            .or_else(|| resp.get("authenticated").and_then(|v| v.as_bool()))
+            .unwrap_or(false))
+    }
+
+    /// bindDevice 配对（ACP.md §2.3）：私有网关的准入口。成功返回
+    /// Bound token——后续连接 initialize 携带即全放行（主人本人设备）。
+    pub async fn bind_device(
+        &mut self,
+        pair_code: &str,
+        device_name: &str,
+    ) -> Result<BoundDevice, String> {
+        let resp = self
+            .rpc(
+                "bindDevice",
+                json!({"pairCode": pair_code, "deviceName": device_name}),
+            )
+            .await?;
+        let result = resp
+            .pointer("/result")
+            .cloned()
+            .or_else(|| resp.get("result").cloned())
+            .unwrap_or(Value::Null);
+        serde_json::from_value(result).map_err(|e| format!("bindDevice 响应解析失败: {e}"))
     }
 
     /// 网关已注册 agent 列表。
@@ -429,6 +474,44 @@ mod tests {
         assert!(AgentEndpoint::parse_url("https://relay.aginx.net").is_none());
         assert!(AgentEndpoint::parse_url("agent://only.relay.").is_none());
         assert!(AgentEndpoint::parse_url("agent://.relay.x.com").is_none());
+    }
+
+    // ── 配对绑定（第六刀：bindDevice wire 形状） ──
+
+    #[test]
+    fn bound_device_wire_shape() {
+        // 金样本 = 网关 handler bindDevice 成功响应（ACP.md §2.3）
+        let v: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"deviceId":"device-a1b2","deviceName":"webui","token":"token-6f9e8d7c5b4a3210"}}"#,
+        )
+        .unwrap();
+        let d: BoundDevice =
+            serde_json::from_value(v.pointer("/result").cloned().unwrap()).unwrap();
+        assert_eq!(d.device_id, "device-a1b2");
+        assert_eq!(d.device_name, "webui");
+        assert_eq!(d.token, "token-6f9e8d7c5b4a3210");
+    }
+
+    #[test]
+    fn bound_device_missing_token_rejected() {
+        let d = serde_json::from_value::<BoundDevice>(json!({
+            "deviceId": "x", "deviceName": "y"
+        }));
+        assert!(d.is_err(), "缺 token 字段必须拒收");
+    }
+
+    #[test]
+    fn initialize_authenticated_flag_parse() {
+        // initialize 响应：result.authenticated（网关 handler.rs 固定形状）
+        let v: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"authenticated":true,"serverInfo":{"name":"aginx"}}}"#,
+        )
+        .unwrap();
+        let flag = v
+            .pointer("/result/authenticated")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        assert!(flag);
     }
 
     #[test]

@@ -82,6 +82,7 @@ fn build_app(state: Arc<WebState>) -> Router {
         // 远程网关联系人（webui 第五刀，统一 aginx 流程缺口3）
         .route("/api/gateways", get(gateways_list).post(gateways_add))
         .route("/api/gateways/{target}/remove", post(gateways_remove))
+        .route("/api/gateways/{target}/bind", post(gateways_bind))
         .route("/api/remote-agents", get(remote_agents))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -258,7 +259,8 @@ fn parse_remote_contact(id: &str) -> Option<(&str, &str)> {
 }
 
 /// 联系人 id →（连接端点，对端 agent id）。裸 id = 本机网关配置；
-/// `@target~agent` = 地址簿远程网关（secret 复用本机同网凭证）。
+/// `@target~agent` = 地址簿远程网关（secret 复用本机同网凭证；
+/// 绑定过则注入网关层 token——私有网关的 Bound 身份）。
 async fn endpoint_for_contact(
     st: &Arc<WebState>,
     id: &str,
@@ -268,8 +270,9 @@ async fn endpoint_for_contact(
             .tool_store
             .gateway_url(target)
             .ok_or_else(|| format!("远程网关 {target} 不在地址簿"))?;
-        let ep = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)
+        let mut ep = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)
             .ok_or_else(|| format!("网关地址无效: {url}"))?;
+        ep.auth_token = st.tool_store.gateway_token(target);
         Ok((ep, agent.to_string()))
     } else {
         let ep = crate::agent_client::AgentEndpoint::from_gateway_config()
@@ -487,14 +490,21 @@ async fn sessions_for_contact(
     conn.sessions_list(&agent).await
 }
 
-// ── 远程网关联系人（webui 第五刀：统一 aginx 流程缺口3） ──
+// ── 远程网关联系人（webui 第五刀：统一 aginx 流程缺口3；第六刀加配对绑定） ──
 
 async fn gateways_list(State(st): State<Arc<WebState>>) -> Response {
     let gateways: Vec<serde_json::Value> = st
         .tool_store
         .gateways()
         .into_iter()
-        .map(|(target, url)| serde_json::json!({"target": target, "url": url}))
+        .map(|g| {
+            serde_json::json!({
+                "target": g.target,
+                "url": g.url,
+                "bound": g.bound,
+                "device_name": g.device_name,
+            })
+        })
         .collect();
     Json(serde_json::json!({ "gateways": gateways })).into_response()
 }
@@ -504,8 +514,10 @@ struct GatewayAddBody {
     url: String,
 }
 
-/// 添加远程网关：先探活（connect + listAgents），通了才进地址簿——
-/// 地址簿里没有死地址。响应带该网关 agent 列表与已添加标记。
+/// 添加远程网关：先探活（connect + initialize），通了才进地址簿——
+/// 地址簿里没有死地址。探活后的 listAgents 失败 = 网关活着但私有且
+/// 未绑定 → 仍收录，`needs_bind: true`（前端弹配对码输入）。响应带
+/// 该网关 agent 列表与已添加标记。
 async fn gateways_add(
     State(st): State<Arc<WebState>>,
     Json(body): Json<GatewayAddBody>,
@@ -518,23 +530,43 @@ async fn gateways_add(
         )
             .into_response();
     };
-    let agents = match async {
-        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
-        conn.initialize().await?;
-        conn.list_agents().await
-    }
-    .await
-    {
-        Ok(a) => a,
+    let mut ep = ep;
+    ep.auth_token = st.tool_store.gateway_token(&ep.target);
+    let target = ep.target.clone();
+
+    // 探活三步走：connect 失败/initialize 失败 = 连不上（502 不收录）；
+    // listAgents 被拒 = 网关活着但私有且未绑定 → 收录 + needs_bind。
+    let mut conn = match crate::agent_client::AgentConn::connect(&ep).await {
+        Ok(c) => c,
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({"error": format!("连不上对方网关: {e}")})),
             )
-                .into_response()
+                .into_response();
         }
     };
-    let target = ep.target.clone();
+    if let Err(e) = conn.initialize().await {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("握手失败: {e}")})),
+        )
+            .into_response();
+    }
+    let agents = match conn.list_agents().await {
+        Ok(a) => a,
+        Err(denied) => {
+            st.tool_store.add_gateway(&target, &body.url);
+            info!(target = %target, "远程网关已收录（私有，待配对）");
+            return Json(serde_json::json!({
+                "target": target,
+                "needs_bind": true,
+                "gateway_error": denied,
+                "agents": [],
+            }))
+            .into_response();
+        }
+    };
     st.tool_store.add_gateway(&target, &body.url);
     info!(target = %target, "远程网关已收录");
     let agents: Vec<serde_json::Value> = agents
@@ -552,6 +584,102 @@ async fn gateways_add(
         })
         .collect();
     Json(serde_json::json!({"target": target, "agents": agents})).into_response()
+}
+
+#[derive(Deserialize)]
+struct GatewayBindBody {
+    pair_code: String,
+    #[serde(default)]
+    device_name: Option<String>,
+}
+
+/// 配对绑定（第六刀）：pairCode → bindDevice → 凭证入 store。
+/// 成功后立即用新 token 拉 agent 列表（私有网关绑定前看不到）。
+async fn gateways_bind(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+    Json(body): Json<GatewayBindBody>,
+) -> Response {
+    let Some(url) = st.tool_store.gateway_url(&target) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let pair_code = body.pair_code.trim().to_string();
+    if pair_code.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "配对码不能为空"})),
+        )
+            .into_response();
+    }
+    let Some(ep) = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "地址簿里的 URL 已失效"})),
+        )
+            .into_response();
+    };
+    // bindDevice 是未鉴权也放行的两个方法之一（ACP.md §2.2）——不带 token 直连
+    let device_name = body.device_name.unwrap_or_else(|| "webui".to_string());
+    let device = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.bind_device(&pair_code, &device_name).await
+    }
+    .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            // 网关侧拒（码错/过期/已绑他机）原样透传给前端
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("配对失败: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    st.tool_store
+        .set_gateway_binding(&target, &device.token, &device.device_name);
+    info!(target = %target, device = %device.device_name, "远程网关配对绑定成功");
+
+    // 新 token 立刻生效：拉 agent 列表返回（绑定前 needs_bind 状态下是空的）
+    let mut ep = ep;
+    ep.auth_token = Some(device.token.clone());
+    let agents: Vec<serde_json::Value> = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.list_agents().await
+    }
+    .await
+    {
+        Ok(list) => list
+            .into_iter()
+            .map(|a| {
+                let cid = format!("@{target}~{}", a.id);
+                serde_json::json!({
+                    "id": a.id,
+                    "contact_id": cid,
+                    "name": a.name,
+                    "description": a.description,
+                    "agent_type": a.agent_type,
+                    "added": st.tool_store.is_added(&cid),
+                })
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!(target = %target, error = %e, "绑定后拉 agent 列表失败");
+            Vec::new()
+        }
+    };
+    Json(serde_json::json!({
+        "target": target,
+        "device_name": device.device_name,
+        "agents": agents,
+    }))
+    .into_response()
 }
 
 async fn gateways_remove(
@@ -584,26 +712,32 @@ async fn remote_agents(State(st): State<Arc<WebState>>, Query(q): Query<RemoteAg
         )
             .into_response();
     };
-    let Some(ep) = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url) else {
+    let Some(mut ep) = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)
+    else {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "地址簿里的 URL 已失效"})),
         )
             .into_response();
     };
-    let agents = match async {
-        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
-        conn.initialize().await?;
-        conn.list_agents().await
-    }
-    .await
-    {
-        Ok(a) => a,
+    ep.auth_token = st.tool_store.gateway_token(&q.gateway);
+    let mut conn = match crate::agent_client::AgentConn::connect(&ep).await {
+        Ok(c) => c,
         Err(e) => {
+            return Json(serde_json::json!({"agents": [], "gateway_error": e})).into_response();
+        }
+    };
+    if let Err(e) = conn.initialize().await {
+        return Json(serde_json::json!({"agents": [], "gateway_error": e})).into_response();
+    }
+    let agents = match conn.list_agents().await {
+        Ok(a) => a,
+        Err(denied) => {
+            // 网关活着但拒绝列表 = 私有且未绑定（token 失效同此表现）
             return Json(
-                serde_json::json!({"agents": [], "gateway_error": e}),
+                serde_json::json!({"agents": [], "needs_bind": true, "gateway_error": denied}),
             )
-            .into_response()
+            .into_response();
         }
     };
     let target = &q.gateway;

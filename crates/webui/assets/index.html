@@ -83,7 +83,7 @@
     <div id="remote-grid"></div>
     <h4 class="mkt-sec">本机网关</h4>
     <div id="tools-grid"></div>
-    <div class="mkt-note">本机列表来自本机 aginx 网关（agent:// listAgents）；远程网关走同一协议（算力在他家，会话在对方侧，凭 sessionId 续接）。聊天经网关路由到对应 CLI；移除会一并清掉该联系人的会话记录。</div>
+    <div class="mkt-note">本机列表来自本机 aginx 网关（agent:// listAgents）；远程网关走同一协议（算力在他家，会话在对方侧，凭 sessionId 续接）。私有网关先在对方机器 <code>aginx pair</code> 生成配对码，在此输入绑定（🔒 后即主人设备，全放行）。聊天经网关路由到对应 CLI；移除会一并清掉该联系人的会话记录。</div>
   </main>
 
   <dialog id="hubkey-dialog">

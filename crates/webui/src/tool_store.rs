@@ -35,13 +35,20 @@ struct StoredContact {
     messages: Vec<StoredMessage>,
 }
 
-/// 远程网关地址簿条目（第五刀）。
+/// 远程网关地址簿条目（第五刀；第六刀加绑定凭证——私有网关的
+/// Bound token，配对一次后续连接 initialize 携带即全放行）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredGateway {
     /// relay 路由 id（agent://<target>.relay.<domain> 的 target）
     target: String,
     /// 原始 URL（保留 domain/port，重连时重新解析）
     url: String,
+    /// bindDevice 配对所得网关层 token（凭证钥匙串的 per-gateway 槽）
+    #[serde(default)]
+    token: Option<String>,
+    /// 绑定设备名（展示用）
+    #[serde(default)]
+    device_name: Option<String>,
 }
 
 /// 远程联系人的展示元数据——本机不连远程也能渲染联系人列表
@@ -55,6 +62,15 @@ pub struct StoredAgentMeta {
     pub agent_type: String,
     /// 所属远程网关 target
     pub gateway: String,
+}
+
+/// 地址簿网关条目（对外形状：token 不出 store，只报绑定状态）。
+#[derive(Debug, Clone)]
+pub struct GatewayEntry {
+    pub target: String,
+    pub url: String,
+    pub bound: bool,
+    pub device_name: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -135,15 +151,20 @@ impl ToolStore {
         self.persist(&data);
     }
 
-    // ── 远程网关地址簿（第五刀） ──
+    // ── 远程网关地址簿（第五刀；第六刀加绑定凭证） ──
 
-    pub fn gateways(&self) -> Vec<(String, String)> {
+    pub fn gateways(&self) -> Vec<GatewayEntry> {
         self.data
             .lock()
             .unwrap()
             .gateways
             .iter()
-            .map(|g| (g.target.clone(), g.url.clone()))
+            .map(|g| GatewayEntry {
+                target: g.target.clone(),
+                url: g.url.clone(),
+                bound: g.token.is_some(),
+                device_name: g.device_name.clone(),
+            })
             .collect()
     }
 
@@ -157,7 +178,18 @@ impl ToolStore {
             .map(|g| g.url.clone())
     }
 
-    /// 收录远程网关（幂等，URL 以最新为准）。
+    /// 绑定 token（端点注入用）。None = 未绑定/公开网关。
+    pub fn gateway_token(&self, target: &str) -> Option<String> {
+        self.data
+            .lock()
+            .unwrap()
+            .gateways
+            .iter()
+            .find(|g| g.target == target)
+            .and_then(|g| g.token.clone())
+    }
+
+    /// 收录远程网关（幂等，URL 以最新为准；不触碰绑定凭证）。
     pub fn add_gateway(&self, target: &str, url: &str) {
         let mut data = self.data.lock().unwrap();
         match data.gateways.iter_mut().find(|g| g.target == target) {
@@ -165,9 +197,21 @@ impl ToolStore {
             None => data.gateways.push(StoredGateway {
                 target: target.to_string(),
                 url: url.to_string(),
+                token: None,
+                device_name: None,
             }),
         }
         self.persist(&data);
+    }
+
+    /// 记录配对结果（bindDevice 成功后调用）。
+    pub fn set_gateway_binding(&self, target: &str, token: &str, device_name: &str) {
+        let mut data = self.data.lock().unwrap();
+        if let Some(g) = data.gateways.iter_mut().find(|g| g.target == target) {
+            g.token = Some(token.to_string());
+            g.device_name = Some(device_name.to_string());
+            self.persist(&data);
+        }
     }
 
     /// 移除远程网关，级联清掉它名下全部远程联系人（added/记忆/元数据）。
@@ -432,7 +476,40 @@ mod tests {
         // 持久化验证：重载后 other 网关和它的联系人还在
         let s2 = store(tmp.path());
         assert_eq!(s2.gateways().len(), 1);
-        assert_eq!(s2.gateways()[0].0, "other");
+        assert_eq!(s2.gateways()[0].target, "other");
         assert!(s2.is_added("@other~agent1"));
+    }
+
+    #[test]
+    fn gateway_binding_round_trip_and_compat() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("external-tools.json");
+        // 第五刀时代的旧文件（无 token 字段）必须平滑升级
+        std::fs::write(
+            &path,
+            r#"{"added":[],"contacts":{},"gateways":[{"target":"sv1","url":"agent://sv1.relay.aginx.net"}],"remote_meta":{}}"#,
+        )
+        .unwrap();
+        let s = ToolStore::load(path);
+        assert_eq!(s.gateways().len(), 1);
+        assert!(!s.gateways()[0].bound, "旧文件无凭证 → 未绑定");
+        assert_eq!(s.gateway_token("sv1"), None);
+
+        // 配对成功 → 记凭证；add_gateway 更新 URL 不碰凭证
+        s.set_gateway_binding("sv1", "token-abc123", "webui");
+        assert_eq!(s.gateway_token("sv1").as_deref(), Some("token-abc123"));
+        assert!(s.gateways()[0].bound);
+        assert_eq!(s.gateways()[0].device_name.as_deref(), Some("webui"));
+        s.add_gateway("sv1", "agent://sv1.relay.aginx.net:9443");
+        assert_eq!(s.gateway_token("sv1").as_deref(), Some("token-abc123"));
+
+        // 重载后凭证还在（token 只落本机 store，���出网关侧以外的地方）
+        let s2 = ToolStore::load(tmp.path().join("external-tools.json"));
+        assert_eq!(s2.gateway_token("sv1").as_deref(), Some("token-abc123"));
+        assert!(s2.gateways()[0].bound);
+
+        // 移网关 = 凭证一并清
+        s2.remove_gateway("sv1");
+        assert_eq!(s2.gateway_token("sv1"), None);
     }
 }

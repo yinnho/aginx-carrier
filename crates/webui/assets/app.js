@@ -14,8 +14,9 @@ const state = {
   installing: false,
   tools: [], // 本机网关 agent（/api/tools）；网关不可达时只含已添加的 stale 项
   remoteContacts: [], // 远程联系人（/api/tools remote——store 元数据，零网络）
-  gateways: [], // 远程网关地址簿（/api/gateways）
+  gateways: [], // 远程网关地址簿（/api/gateways，bound=已配对绑定）
   remoteAgents: {}, // target -> 对方网关 agent 列表（点开网关时拉取）
+  gwNeedsBind: {}, // target -> true：私有网关待配对（探活/listAgents 被拒时置位）
   activeGateway: null,
   senderId:
     localStorage.getItem('aginx_sender') ||
@@ -761,12 +762,17 @@ async function loadTools() {
   renderContacts();
 }
 
-// ---------- 远程网关地址簿（第五刀：用别人家的分身走标准 agent:// 流程） ----------
+// ---------- 远程网关地址���（第五刀：用别人家的分身走标准 agent:// 流程；
+// 第六刀：私有网关配对码绑定） ----------
 
 async function loadGateways() {
   try {
     const data = await apiGet('/api/gateways');
     state.gateways = data.gateways || [];
+    // 已绑定的网关不再挂"待配对"标
+    for (const g of state.gateways) {
+      if (g.bound) delete state.gwNeedsBind[g.target];
+    }
   } catch (e) {
     state.gateways = [];
   }
@@ -788,8 +794,9 @@ function renderGateways() {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'gw-chip' + (state.activeGateway === g.target ? ' on' : '');
-    chip.title = g.url;
-    chip.innerHTML = `${escapeHtml(g.target)} <span class="gw-del" title="移除网关（连带联系人）">✕</span>`;
+    const mark = g.bound ? '🔒' : (state.gwNeedsBind && state.gwNeedsBind[g.target] ? '⚠️' : '');
+    chip.title = g.bound ? `已绑定设备：${g.device_name || 'webui'}（${g.url}）` : g.url;
+    chip.innerHTML = `${mark} ${escapeHtml(g.target)} <span class="gw-del" title="移除网关（连带联系人）">✕</span>`;
     chip.onclick = (e) => {
       if (e.target.classList.contains('gw-del')) removeGateway(g.target);
       else loadRemoteAgents(g.target);
@@ -808,6 +815,9 @@ async function addGateway() {
     const d = await apiSend('/api/gateways', 'POST', { url });
     state.activeGateway = d.target;
     state.remoteAgents[d.target] = d.agents || [];
+    if (d.needs_bind) {
+      state.gwNeedsBind[d.target] = true;
+    }
     $('gw-url').value = '';
     await loadGateways();
     renderRemoteAgents();
@@ -824,10 +834,18 @@ async function loadRemoteAgents(target) {
   $('remote-grid').innerHTML = '<div class="mkt-loading">拉取对方网关 agent 列表…</div>';
   try {
     const d = await apiGet(`/api/remote-agents?gateway=${encodeURIComponent(target)}`);
+    if (d.needs_bind) {
+      // 网关活着但私有且未绑定（或 token 失效）——走配对码绑定
+      state.gwNeedsBind[target] = true;
+      state.remoteAgents[target] = [];
+      renderRemoteAgents();
+      return;
+    }
     if (d.gateway_error) {
       $('remote-grid').innerHTML = `<div class="mkt-loading mkt-err">对方网关不可达：${escapeHtml(d.gateway_error)}</div>`;
       return;
     }
+    delete state.gwNeedsBind[target];
     state.remoteAgents[target] = d.agents || [];
   } catch (e) {
     $('remote-grid').innerHTML = `<div class="mkt-loading mkt-err">拉取失败：${escapeHtml(e.message)}</div>`;
@@ -836,12 +854,48 @@ async function loadRemoteAgents(target) {
   renderRemoteAgents();
 }
 
+/// 私有网关的配对码绑定行（renderRemoteAgents 的 needs_bind 分支渲染）
+function renderBindRow(grid, target) {
+  const row = document.createElement('div');
+  row.className = 'gw-bind-row';
+  row.innerHTML =
+    `<div class="gw-bind-tip">⚠️ 网关 ${escapeHtml(target)} 是私有的——在对方机器上执行 <code>aginx pair</code> 拿配对码（5 分钟有效），输入后绑定为本机设备。</div>` +
+    `<input id="pair-code" type="text" placeholder="6 位配对码" autocomplete="off">` +
+    `<button id="gw-bind-btn" class="btn-primary" type="button">绑定</button>`;
+  grid.appendChild(row);
+  const input = row.querySelector('#pair-code');
+  const doBind = () => bindGateway(target, input.value.trim());
+  row.querySelector('#gw-bind-btn').onclick = doBind;
+  input.onkeydown = (e) => { if (e.key === 'Enter') doBind(); };
+  input.focus();
+}
+
+async function bindGateway(target, pairCode) {
+  if (!pairCode) return;
+  const btn = $('gw-bind-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '绑定中…'; }
+  try {
+    const d = await apiSend(`/api/gateways/${encodeURIComponent(target)}/bind`, 'POST', { pair_code: pairCode });
+    delete state.gwNeedsBind[target];
+    state.remoteAgents[target] = d.agents || [];
+    await loadGateways();
+    renderRemoteAgents();
+  } catch (e) {
+    alert(`配对失败：${e.message}`);
+    if (btn) { btn.disabled = false; btn.textContent = '绑定'; }
+  }
+}
+
 function renderRemoteAgents() {
   const grid = $('remote-grid');
   grid.innerHTML = '';
   const t = state.activeGateway;
   if (!t || !state.remoteAgents[t]) return;
   const agents = state.remoteAgents[t];
+  if (state.gwNeedsBind && state.gwNeedsBind[t]) {
+    renderBindRow(grid, t);
+    return;
+  }
   if (!agents.length) {
     grid.innerHTML = '<div class="mkt-loading">对方网关没有可列出的 agent</div>';
     return;

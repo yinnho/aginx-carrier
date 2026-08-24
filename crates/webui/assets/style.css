@@ -296,6 +296,20 @@ body {
 .gw-del:hover { color: #c0392b; }
 #remote-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding: 12px 24px; }
 #remote-grid .mkt-card button { align-self: flex-start; }
+/* 配对码绑定行（第六刀：私有网关 needs_bind 状态，占满首行） */
+.gw-bind-row {
+  grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 12px 14px; border: 1px dashed #d0d3d8; border-radius: 6px; background: #fafbfc;
+}
+.gw-bind-row .gw-bind-tip { flex: 1 1 100%; font-size: 12px; color: #8a6d3b; }
+.gw-bind-row .gw-bind-tip code {
+  background: #f0f2f5; padding: 1px 5px; border-radius: 3px; font-size: 11px;
+}
+.gw-bind-row input {
+  width: 140px; padding: 7px 12px; border: 1px solid #d0d3d8;
+  border-radius: 4px; font-size: 13px; letter-spacing: 1px; outline: none;
+}
+.gw-bind-row input:focus { border-color: var(--green); }
 
 /* Hub key 弹窗 */
 #hubkey-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 400px; max-width: 92vw; }
