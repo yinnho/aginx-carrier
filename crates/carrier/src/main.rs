@@ -36,6 +36,9 @@ enum Command {
         /// 分身名称
         #[arg(long)]
         clone: String,
+        /// 续接会话 id（网关 `${SESSION_ID}` 注入；缺省 = 新会话并铸造 id）
+        #[arg(long)]
+        session: Option<String>,
     },
     /// 显示版本与本地数据目录等信息
     Info,
@@ -94,7 +97,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Start => start::run()?,
         Command::Web { listen } => web::run(listen)?,
-        Command::Acp { clone } => acp::run(clone)?,
+        Command::Acp { clone, session } => acp::run(clone, session)?,
         Command::Info => {
             let data_dir = dirs::home_dir()
                 .map(|h| h.join(".aginx").join("carrier"))

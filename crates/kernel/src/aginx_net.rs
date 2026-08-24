@@ -32,13 +32,24 @@ struct AgentToml {
     description: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     version: String,
+    /// stdout 方言声明（ACP.md §2.8）：ask 模式发 claude-stream-json 事件行，
+    /// 网关翻译器收割 session_id/成本——统一 aginx 流程的会话契约。
+    output: String,
     command: CommandToml,
+    session: SessionToml,
 }
 
 #[derive(Serialize)]
 struct CommandToml {
     path: String,
     args: Vec<String>,
+}
+
+/// `resume_args` 只在网关拿到 sessionId 时追加（`--session <id>`）——
+/// carrier 侧 label = `aginx:<id>` 跨进程续接。
+#[derive(Serialize)]
+struct SessionToml {
+    resume_args: Vec<String>,
 }
 
 /// Write `~/.aginx/agents/<name>/aginx.toml` registering the freshly
@@ -65,9 +76,13 @@ pub fn register_clone(
         agent_type: "aginx-carrier".to_string(),
         description: description.trim().to_string(),
         version: version.trim().to_string(),
+        output: "claude-stream-json".to_string(),
         command: CommandToml {
             path: exe,
             args: vec!["acp".to_string(), "--clone".to_string(), name.to_string()],
+        },
+        session: SessionToml {
+            resume_args: vec!["--session".to_string(), "${SESSION_ID}".to_string()],
         },
     };
     let body = toml::to_string_pretty(&doc).map_err(std::io::Error::other)?;
@@ -134,6 +149,10 @@ mod tests {
         // Gateway discovery requires an absolute existing path (or bare name).
         let path = cmd["path"].as_str().unwrap();
         assert!(path.starts_with('/') && std::path::Path::new(path).exists());
+        // 会话契约：方言声明 + resume_args（网关只在拿到 sessionId 时追加）。
+        assert_eq!(cfg["output"].as_str(), Some("claude-stream-json"));
+        let resume: Vec<String> = cfg["session"]["resume_args"].clone().try_into().unwrap();
+        assert_eq!(resume, vec!["--session".to_string(), "${SESSION_ID}".to_string()]);
     }
 
     #[test]

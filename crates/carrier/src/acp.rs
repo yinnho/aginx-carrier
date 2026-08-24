@@ -41,7 +41,7 @@ struct BridgeState {
 /// bridge; otherwise run one-shot `ask` mode (the gateway's `PromptAdapter`
 /// writes a bare prompt line to stdin and expects stdout lines back). Both
 /// modes share the same `aginx.toml` command entry.
-pub fn run(clone: String) -> anyhow::Result<()> {
+pub fn run(clone: String, session: Option<String>) -> anyhow::Result<()> {
     // All logs to stderr — stdout is protocol-only.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -80,7 +80,7 @@ pub fn run(clone: String) -> anyhow::Result<()> {
             msg.push('\n');
             msg.push_str(&l);
         }
-        return run_ask(&clone, &msg);
+        return run_ask(&clone, session.as_deref(), &msg);
     }
 
     let state = Arc::new(BridgeState {
@@ -464,12 +464,21 @@ async fn wait_cancelled(flag: Arc<AtomicBool>) {
 }
 
 /// One-shot `ask` mode — the gateway `PromptAdapter` contract: prompt on
-/// stdin, response lines on stdout, exit 0 on success / non-zero on failure.
+/// stdin, response lines on stdout, exit 0.
 ///
-/// Streams each `TextDelta` to stdout as it arrives so the gateway can emit
-/// `chunk` notifications progressively; a trailing newline flushes the last
-/// line through the adapter's line reader.
-fn run_ask(clone: &str, message: &str) -> anyhow::Result<()> {
+/// 会话契约（统一 aginx 流程）：stdout 说 claude-stream-json 方言（接入包
+/// 声明 `output = "claude-stream-json"`，网关翻译器收割）——每个 TextDelta
+/// 一行 `assistant` 事件，轮末一行 `result` 事件带 `session_id` /
+/// `num_turns` / `duration_ms` / `is_error`。`--session` 缺省铸造新 uuid；
+/// kernel 会话 label = `aginx:<session_id>`——同 id 跨进程续接同一会话
+/// （连续性由 carrier 侧 session 存储保证，网关台账只记账目）。
+fn run_ask(clone: &str, session: Option<&str>, message: &str) -> anyhow::Result<()> {
+    // Charset gate（网关侧同款注入门）：非法 id 弃用改铸造，不炸轮。
+    let sid = session
+        .filter(|s| valid_session_id(s))
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let started = std::time::Instant::now();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -490,7 +499,7 @@ fn run_ask(clone: &str, message: &str) -> anyhow::Result<()> {
                 agent_id,
                 message,
                 Some(kh),
-                Some(format!("ask:{clone}")),
+                Some(format!("aginx:{sid}")),
                 None,
                 None,
                 Some("ask".to_string()),
@@ -504,24 +513,90 @@ fn run_ask(clone: &str, message: &str) -> anyhow::Result<()> {
         let mut out = stdout.lock();
         while let Some(ev) = rx.recv().await {
             if let carrier_runtime::llm_driver::StreamEvent::TextDelta { text } = ev {
-                write!(out, "{text}").ok();
+                writeln!(out, "{}", stream_assistant_line(&text)).ok();
                 out.flush().ok();
             }
         }
+        let duration_ms = started.elapsed().as_millis() as u64;
         match handle.await {
             Ok(Ok(result)) => {
-                writeln!(out).ok();
+                // 静默轮也发 result 行——session_id 必须回吐（续接链不断）。
+                writeln!(
+                    out,
+                    "{}",
+                    stream_result_line(
+                        &sid,
+                        "success",
+                        result.response.trim(),
+                        result.iterations,
+                        duration_ms,
+                        false,
+                    )
+                )
+                .ok();
                 out.flush().ok();
-                if result.response.trim().is_empty() {
-                    // Silent turn — still a clean exit.
-                    return Ok(());
-                }
                 Ok(())
             }
-            Ok(Err(e)) => Err(anyhow::anyhow!("agent turn failed: {e}")),
+            Ok(Err(e)) => {
+                // 轮失败同样带 session_id：翻译器出干净 error 帧，会话链保留。
+                writeln!(
+                    out,
+                    "{}",
+                    stream_result_line(
+                        &sid,
+                        "error_turn",
+                        &format!("agent turn failed: {e}"),
+                        0,
+                        duration_ms,
+                        true,
+                    )
+                )
+                .ok();
+                out.flush().ok();
+                Ok(())
+            }
             Err(e) => Err(anyhow::anyhow!("agent turn task panicked: {e}")),
         }
     })
+}
+
+/// 网关侧注入门同款：`[A-Za-z0-9_-]`。
+fn valid_session_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// claude-stream-json `assistant` 事件行：message.content[] 单 text 块。
+/// 网关翻译器（aginx 仓 translate.rs）扫 content[] 的 text 块拼 chunk。
+fn stream_assistant_line(delta: &str) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": delta}]},
+    })
+    .to_string()
+}
+
+/// claude-stream-json `result` 事件行：网关从本行收割 session_id/num_turns/
+/// duration_ms；`is_error:true` 时 `result` 字段作为错误文本出 error 帧。
+fn stream_result_line(
+    sid: &str,
+    subtype: &str,
+    result_text: &str,
+    num_turns: u32,
+    duration_ms: u64,
+    is_error: bool,
+) -> String {
+    serde_json::json!({
+        "type": "result",
+        "subtype": subtype,
+        "session_id": sid,
+        "num_turns": num_turns,
+        "duration_ms": duration_ms,
+        "is_error": is_error,
+        "result": result_text,
+    })
+    .to_string()
 }
 
 
@@ -563,6 +638,55 @@ fn update(out: &Arc<Mutex<std::io::Stdout>>, session_id: &str, update: serde_jso
             "params": {"sessionId": session_id, "update": update},
         }),
     );
+}
+
+/// ask 模式方言行 + sessionId 注入门单测（会话契约，统一 aginx 流程）。
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn assistant_line_carries_single_text_block() {
+        let v: serde_json::Value =
+            serde_json::from_str(&stream_assistant_line("你好，世界")).unwrap();
+        assert_eq!(v["type"].as_str(), Some("assistant"));
+        assert_eq!(v["message"]["content"][0]["type"].as_str(), Some("text"));
+        assert_eq!(
+            v["message"]["content"][0]["text"].as_str(),
+            Some("你好，世界")
+        );
+    }
+
+    #[test]
+    fn result_line_shape_matches_gateway_harvest() {
+        let line = stream_result_line("d903c124-abcd_1", "success", "已记", 3, 8123, false);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["type"].as_str(), Some("result"));
+        assert_eq!(v["session_id"].as_str(), Some("d903c124-abcd_1"));
+        assert_eq!(v["num_turns"].as_u64(), Some(3));
+        assert_eq!(v["duration_ms"].as_u64(), Some(8123));
+        assert_eq!(v["is_error"].as_bool(), Some(false));
+        assert_eq!(v["result"].as_str(), Some("已记"));
+    }
+
+    #[test]
+    fn error_result_line_flags_and_keeps_session() {
+        let line = stream_result_line("abc-1", "error_turn", "agent turn failed: boom", 0, 5, true);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["is_error"].as_bool(), Some(true));
+        assert_eq!(v["session_id"].as_str(), Some("abc-1"));
+        assert!(v["result"].as_str().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn session_id_charset_gate() {
+        assert!(valid_session_id("b8f713a4-ea3b-4d6c-920b-87dc2a0403f0"));
+        assert!(valid_session_id("Ab_0-"));
+        assert!(!valid_session_id(""));
+        assert!(!valid_session_id("a;rm -rf /"));
+        assert!(!valid_session_id("带中文"));
+        assert!(!valid_session_id("with space"));
+    }
 }
 
 /// ACP.md 金样本互锁测试（协议立法层）。
