@@ -145,15 +145,59 @@ impl ToolStore {
         }
         self.persist(&data);
     }
+
+    /// 列某工具在该 sender 下的全部会话（按最后消息时间倒序）。
+    /// cwd 从 key 剥前缀而来——这是"换目录=新会话"模型的会话索引面。
+    pub fn list_sessions(&self, agent: &str, sender: &str) -> Vec<SessionSummary> {
+        let data = self.data.lock().unwrap();
+        let prefix = format!("{agent}/{sender}/");
+        let mut out: Vec<SessionSummary> = data
+            .sessions
+            .iter()
+            .filter_map(|(k, s)| {
+                let cwd = k.strip_prefix(&prefix)?.to_string();
+                let last = s.messages.last()?;
+                Some(SessionSummary {
+                    cwd,
+                    session_id: s.session_id.clone(),
+                    count: s.messages.len(),
+                    last_ts: last.ts.clone(),
+                    last_text: preview(&last.text),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| b.last_ts.cmp(&a.last_ts));
+        out
+    }
 }
 
-/// RFC3339 UTC 时间戳（仅台账展示用，精度秒即可）。
+/// 会话摘要（历史会话列表下发前端）。
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionSummary {
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub count: usize,
+    pub last_ts: String,
+    pub last_text: String,
+}
+
+/// 单行预览：压掉换行，截 80 字符（chars 边界安全）。
+fn preview(text: &str) -> String {
+    let flat: String = text.chars().map(|c| if c == '\n' || c == '\r' { ' ' } else { c }).collect();
+    let mut s: String = flat.chars().take(80).collect();
+    if flat.chars().count() > 80 {
+        s.push('…');
+    }
+    s
+}
+
+/// RFC3339 UTC 时间戳（毫秒精度——会话列表按它倒序，秒级同秒会乱序）。
 fn chrono_like_now() -> String {
-    let secs = std::time::SystemTime::now()
+    let dur = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // 1970-01-01T00:00:00Z + secs → 手写换算避免引入 chrono 依赖
+        .unwrap_or_default();
+    let (secs, ms) = (dur.as_secs(), dur.subsec_millis());
+    // 1970-01-01T00:00:00.000Z + secs → 手写换算避免引入 chrono 依赖
     let days = secs / 86400;
     let rem = secs % 86400;
     let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -168,7 +212,7 @@ fn chrono_like_now() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let mo = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mo <= 2 { y + 1 } else { y };
-    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.{ms:03}Z")
 }
 
 #[cfg(test)]
@@ -241,12 +285,42 @@ mod tests {
     }
 
     #[test]
+    fn list_sessions_orders_and_scopes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store(tmp.path());
+        s.append_turn("claude", "web:u1", "/tmp/b", "b1", "b答", Some("sid-b"));
+        s.append_turn("claude", "web:u1", "/tmp/a", "a1", "a答", Some("sid-a"));
+        s.append_turn("claude", "web:u2", "/tmp/c", "c1", "c答", Some("sid-c"));
+        s.append_turn("gemini", "web:u1", "/tmp/a", "g1", "g答", None);
+
+        let list = s.list_sessions("claude", "web:u1");
+        // 只含该 agent+sender 的两个会话，时间倒序（a 后写在前）
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].cwd, "/tmp/a");
+        assert_eq!(list[0].count, 2);
+        assert_eq!(list[0].last_text, "a答");
+        assert_eq!(list[0].session_id.as_deref(), Some("sid-a"));
+        assert_eq!(list[1].cwd, "/tmp/b");
+
+        // 换行压成空格 + 超长截断
+        s.append_turn("claude", "web:u1", "/tmp/a", "x", "a\nb", None);
+        let list2 = s.list_sessions("claude", "web:u1");
+        assert_eq!(list2[0].last_text, "a b");
+        let long = "字".repeat(100);
+        s.append_turn("claude", "web:u1", "/tmp/a", "y", &long, None);
+        let list3 = s.list_sessions("claude", "web:u1");
+        assert!(list3[0].last_text.chars().count() == 81); // 80 + 省略号
+        assert!(list3[0].last_text.ends_with('…'));
+    }
+
+    #[test]
     fn timestamp_shape() {
         let ts = chrono_like_now();
-        // 2026-08-24T..:..:..Z
-        assert_eq!(ts.len(), 20);
+        // 2026-08-24T..:..:...###Z（毫秒精度）
+        assert_eq!(ts.len(), 24);
         assert!(ts.ends_with('Z'));
         assert_eq!(&ts[4..5], "-");
         assert_eq!(&ts[10..11], "T");
+        assert_eq!(&ts[19..20], ".");
     }
 }

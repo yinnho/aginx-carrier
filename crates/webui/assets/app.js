@@ -13,7 +13,7 @@ const state = {
   market: { q: '', page: 1, templates: [], hasMore: false, keyOk: true, hubEnv: '', hubUrl: '' },
   installing: false,
   tools: [], // 网关 agent（/api/tools）；网关不可达时只含已添加的 stale 项
-  cwdByTool: {}, // 工具 id -> 工作目录（空=默认；换目录＝新会话）
+  cwdByTool: JSON.parse(localStorage.getItem('aginx_cwds') || '{}'), // 工具 id -> 工作目录（持久化；空=默认；换目录＝新会话）
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -196,6 +196,48 @@ async function loadCwdDir(p) {
   }
   if (!list.children.length) {
     list.innerHTML = '<div class="cwd-row-item cwd-dim">（没有子目录）</div>';
+  }
+}
+
+// 历史会话：store 按 cwd 记账的全部会话，点击切回对应目录（＝切回会话）
+async function openSessions() {
+  const cur = state.current;
+  if (!cur || cur.kind !== 'gateway') return;
+  await renderSessions();
+  $('sessions-dialog').showModal();
+}
+
+async function renderSessions() {
+  const cur = state.current;
+  const list = $('sessions-list');
+  let data;
+  try {
+    data = await apiGet(
+      `/api/tool-sessions?agent=${encodeURIComponent(cur.id)}&sender=${encodeURIComponent(state.senderId)}`
+    );
+  } catch (e) {
+    list.innerHTML = `<div class="cwd-row-item cwd-dim">加载失败：${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  const curCwd = cwdOf(cur.id);
+  list.innerHTML = '';
+  for (const s of data.sessions || []) {
+    const el = document.createElement('div');
+    el.className = 'sess-item' + (s.cwd === curCwd ? ' sess-current' : '');
+    const time = (s.last_ts || '').slice(0, 19).replace('T', ' ');
+    el.innerHTML =
+      `<div class="sess-cwd">📁 ${escapeHtml(s.cwd)}${s.cwd === curCwd ? ' <span class="sess-mark">当前</span>' : ''}</div>` +
+      `<div class="sess-meta">${s.count} 条 · ${escapeHtml(time)} · ${escapeHtml(s.last_text || '')}</div>`;
+    el.onclick = () => {
+      $('sessions-dialog').close();
+      const input = $('chat-cwd');
+      input.value = s.cwd;
+      input.dispatchEvent(new Event('change')); // 复用换目录逻辑（持久化+拉历史）
+    };
+    list.appendChild(el);
+  }
+  if (!list.children.length) {
+    list.innerHTML = '<div class="cwd-row-item cwd-dim">（还没有历史会话——发过消息就会出现在这里）</div>';
   }
 }
 
@@ -793,8 +835,13 @@ function wireEvents() {
     const v = $('chat-cwd').value.trim();
     if (v === cwdOf(cur.id)) return;
     state.cwdByTool[cur.id] = v;
+    localStorage.setItem('aginx_cwds', JSON.stringify(state.cwdByTool));
     applyHistory(cur.id, v || undefined); // 换目录＝新会话
   });
+
+  // 历史会话列表：该工具全部 cwd 会话，点击切回
+  $('cwd-history-btn').onclick = openSessions;
+  $('sessions-close').onclick = () => $('sessions-dialog').close();
 
   // 装分身页
   $('market-btn').onclick = () => {

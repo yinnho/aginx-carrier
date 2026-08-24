@@ -149,6 +149,20 @@ body {
 .cwd-row-item.cwd-dim { color: #9aa0a8; cursor: default; }
 #cwd-dialog .dialog-actions { margin-top: 14px; }
 
+/* 历史会话列表 */
+#sessions-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 480px; max-width: 92vw; }
+#sessions-dialog form { padding: 22px 24px; display: flex; flex-direction: column; }
+#sessions-dialog h3 { font-size: 16px; margin-bottom: 12px; }
+#sessions-list { border: 1px solid #e2e4e8; border-radius: 4px; max-height: 340px; overflow-y: auto; }
+.sess-item { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid #f2f3f5; }
+.sess-item:last-child { border-bottom: 0; }
+.sess-item:hover { background: #f6f7f9; }
+.sess-item.sess-current { background: #f0f7f0; }
+.sess-cwd { font: 12.5px ui-monospace, Menlo, monospace; color: #333; word-break: break-all; }
+.sess-mark { font-size: 10px; color: var(--green); border: 1px solid var(--green); border-radius: 3px; padding: 0 4px; }
+.sess-meta { font-size: 11px; color: #9aa0a8; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sessions-dialog .dialog-actions { margin-top: 14px; }
+
 /* ---------- 消息 ---------- */
 #chat-body { flex: 1; overflow-y: auto; padding: 20px 24px 12px; }
 .row { display: flex; margin-bottom: 16px; gap: 10px; }

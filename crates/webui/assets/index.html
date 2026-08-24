@@ -43,6 +43,7 @@
       <div id="chat-cwd-row" class="hidden">
         <span class="cwd-label">📁 工作目录</span>
         <input id="chat-cwd" type="text" placeholder="默认 ~/.aginx/carrier/external/<id>" spellcheck="false" autocomplete="off">
+        <button id="cwd-history-btn" class="cwd-btn" type="button" title="历史会话">历史</button>
         <button id="cwd-browse-btn" class="cwd-btn" type="button" title="选择目录">浏览</button>
         <span class="cwd-hint">改目录＝新会话</span>
       </div>
@@ -106,6 +107,17 @@
       <div class="dialog-actions">
         <button type="button" id="cwd-cancel" class="btn-ghost">取消</button>
         <button type="button" id="cwd-pick" class="btn-primary">选定此目录</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="sessions-dialog">
+    <form onsubmit="return false">
+      <h3>历史会话</h3>
+      <div id="sessions-list"></div>
+      <div class="hint">会话按工作目录区分，点击切回对应会话</div>
+      <div class="dialog-actions">
+        <button type="button" id="sessions-close" class="btn-ghost">关闭</button>
       </div>
     </form>
   </dialog>

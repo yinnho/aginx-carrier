@@ -77,6 +77,7 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/tools/{id}/remove", post(tools_remove))
         // 目录选择器（第三刀补）：home 门内只读目录浏览
         .route("/api/fs/browse", get(fs_browse))
+        .route("/api/tool-sessions", get(tool_sessions))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             trust_middleware,
@@ -353,6 +354,23 @@ async fn fs_browse(Query(q): Query<FsBrowseQuery>) -> Response {
 #[derive(Deserialize)]
 struct FsBrowseQuery {
     path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ToolSessionsQuery {
+    agent: String,
+    sender: String,
+}
+
+/// 历史会话列表（网关工具第三刀）：该工具在此 sender 下的全部会话
+/// （cwd = 会话身份），按最后消息时间倒序——"换目录=新会话"模型的索引面。
+async fn tool_sessions(
+    State(st): State<Arc<WebState>>,
+    Query(q): Query<ToolSessionsQuery>,
+) -> Response {
+    let sender_id = format!("web:{}", q.sender);
+    let sessions = st.tool_store.list_sessions(&q.agent, &sender_id);
+    Json(serde_json::json!({ "sessions": sessions })).into_response()
 }
 
 async fn gateway_list_agents(
