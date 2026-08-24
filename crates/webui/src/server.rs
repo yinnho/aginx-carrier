@@ -539,6 +539,8 @@ async fn gateways_list(State(st): State<Arc<WebState>>) -> Response {
                 "bound": g.bound,
                 "device_name": g.device_name,
                 "role": g.role,
+                "owner_bound": g.owner_bound,
+                "visitor_authorized": g.visitor_authorized,
             })
         })
         .collect();
@@ -740,11 +742,15 @@ fn map_remote_agents(
         .collect()
 }
 
-/// 地址簿网关 → 端点（凭证钥匙串 token 自动注入）。None = 不在地址簿。
-fn book_endpoint(st: &Arc<WebState>, target: &str) -> Option<crate::agent_client::AgentEndpoint> {
+/// 地址簿网关 → 主人端点（👥 面板/管理法专用：Bound 连接。第九刀起
+/// 访客 token 与主人 token 双槽并存——管理端点必须拿主人槽的 token，
+/// 访客身份连管理法会被 owner_gate 拒）。None = 不在地址簿/无主人绑定。
+fn book_owner_endpoint(st: &Arc<WebState>, target: &str) -> Option<crate::agent_client::AgentEndpoint> {
     let url = st.tool_store.gateway_url(target)?;
     let mut ep = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)?;
-    ep.auth_token = st.tool_store.gateway_token(target);
+    // 拿到的是裸 String（? 已解包）——必须装回 ep.auth_token，否则管理
+    // 连接裸奔（approveRequest 被 owner_gate 拒"Authentication required"）
+    ep.auth_token = Some(st.tool_store.gateway_owner_token(target)?);
     Some(ep)
 }
 
@@ -938,10 +944,15 @@ async fn visitors_list(
     State(st): State<Arc<WebState>>,
     AxumPath(target): AxumPath<String>,
 ) -> Response {
-    let Some(ep) = book_endpoint(&st, &target) else {
+    let Some(ep) = book_owner_endpoint(&st, &target) else {
+        let hint = if st.tool_store.gateway_url(&target).is_some() {
+            "该网关无主人绑定（访客身份开不了访客管理面板）"
+        } else {
+            "网关不在地址簿"
+        };
         return (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "网关不在地址簿"})),
+            Json(serde_json::json!({"error": hint})),
         )
             .into_response();
     };
@@ -971,7 +982,7 @@ async fn visitors_approve(
     AxumPath(target): AxumPath<String>,
     Json(body): Json<VisitorApproveBody>,
 ) -> Response {
-    let Some(ep) = book_endpoint(&st, &target) else {
+    let Some(ep) = book_owner_endpoint(&st, &target) else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "网关不在地址簿"})),
@@ -1017,7 +1028,7 @@ async fn visitors_reject(
     AxumPath(target): AxumPath<String>,
     Json(body): Json<VisitorIdBody>,
 ) -> Response {
-    let Some(ep) = book_endpoint(&st, &target) else {
+    let Some(ep) = book_owner_endpoint(&st, &target) else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "网关不在地址簿"})),
@@ -1057,7 +1068,7 @@ async fn visitors_revoke(
     AxumPath(target): AxumPath<String>,
     Json(body): Json<VisitorIdBody>,
 ) -> Response {
-    let Some(ep) = book_endpoint(&st, &target) else {
+    let Some(ep) = book_owner_endpoint(&st, &target) else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "网关不在地址簿"})),

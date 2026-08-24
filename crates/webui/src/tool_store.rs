@@ -35,29 +35,56 @@ struct StoredContact {
     messages: Vec<StoredMessage>,
 }
 
-/// 远程网关地址簿条目（第五刀；第六刀加绑定凭证——私有网关的
-/// Bound token，配对一次后续连接 initialize 携带即全放行）。
+/// 一个凭证槽。token + 名字（owner：配对设备名；visitor：同意流 client 名）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredCredential {
+    token: String,
+    name: String,
+}
+
+/// 远程网关地址簿条目（第五刀；第六刀加绑定凭证；第九刀双槽化——
+/// 主人绑定与访客授权各自独立，同一台 webui 对同一网关可同时是
+/// 主人（配对码绑定）和访客（被授权），凭证互不覆写。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredGateway {
     /// relay 路由 id（agent://<target>.relay.<domain> 的 target）
     target: String,
     /// 原始 URL（保留 domain/port，重连时重新解析）
     url: String,
-    /// 网关层鉴权 token（凭证钥匙串的 per-gateway 槽）。主人 = bindDevice
-    /// 配对所得 Bound token；访客 = 同意流发放的 Authorized token。
+    /// 主人槽：bindDevice 配对所得 Bound token（管理法 + 全量 agent）。
     #[serde(default)]
+    owner: Option<StoredCredential>,
+    /// 访客槽：同意流发放的 Authorized token（allowedAgents 范围内）。
+    #[serde(default)]
+    visitor: Option<StoredCredential>,
+    // ── 单槽时代遗留字段（load 时折叠进上面对应槽位，之后恒 None） ──
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     token: Option<String>,
-    /// 绑定设备名（展示用）
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     device_name: Option<String>,
-    /// "owner"（bindDevice 配对）/ "visitor"（同意流授权）。缺省 owner
-    /// （第六刀前存量条目全是主人绑定）。
-    #[serde(default = "default_gateway_role")]
-    role: String,
+    /// 旧语义："visitor" = 单槽凭证来自同意流
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
 }
 
-fn default_gateway_role() -> String {
-    "owner".to_string()
+impl StoredGateway {
+    /// 单槽 → 双槽迁移（幂等：槽位已有凭证则丢弃遗留字段）。
+    fn migrate(&mut self) {
+        if let Some(token) = self.token.take() {
+            let name = self.device_name.take().unwrap_or_default();
+            let cred = StoredCredential {
+                token,
+                name: if name.is_empty() { "webui".into() } else { name },
+            };
+            if self.role.as_deref() == Some("visitor") && self.visitor.is_none() {
+                self.visitor = Some(cred);
+            } else if self.owner.is_none() {
+                self.owner = Some(cred);
+            }
+        }
+        self.device_name = None;
+        self.role = None;
+    }
 }
 
 /// 远程联系人的展示元数据——本机不连远程也能渲染联系人列表
@@ -78,10 +105,16 @@ pub struct StoredAgentMeta {
 pub struct GatewayEntry {
     pub target: String,
     pub url: String,
+    /// 任一槽位有凭证（主人或访客）
     pub bound: bool,
+    /// 展示名（主人=设备名；访客-only=client 名）
     pub device_name: Option<String>,
-    /// "owner" / "visitor"（同意流，§2.9）
+    /// 主展示角色："owner"（主人槽在）/ "visitor"（仅访客槽）
     pub role: String,
+    /// 主人槽（bindDevice）有凭证——👥 面板可用
+    pub owner_bound: bool,
+    /// 访客槽（同意流）有凭证
+    pub visitor_authorized: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -105,8 +138,9 @@ pub struct ToolStore {
 
 impl ToolStore {
     /// 载入或新建。损坏时重置为空并 warn（不阻断 webui 启动）。
+    /// 单槽时代的遗留字段在此折叠进双槽（幂等）。
     pub fn load(path: PathBuf) -> Self {
-        let data = std::fs::read_to_string(&path)
+        let mut data = std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| {
@@ -115,6 +149,9 @@ impl ToolStore {
                 }
                 StoreData::default()
             });
+        for g in &mut data.gateways {
+            g.migrate();
+        }
         Self {
             path,
             data: Mutex::new(data),
@@ -170,12 +207,22 @@ impl ToolStore {
             .unwrap()
             .gateways
             .iter()
-            .map(|g| GatewayEntry {
-                target: g.target.clone(),
-                url: g.url.clone(),
-                bound: g.token.is_some(),
-                device_name: g.device_name.clone(),
-                role: g.role.clone(),
+            .map(|g| {
+                let owner_bound = g.owner.is_some();
+                let visitor_authorized = g.visitor.is_some();
+                GatewayEntry {
+                    target: g.target.clone(),
+                    url: g.url.clone(),
+                    bound: owner_bound || visitor_authorized,
+                    device_name: g
+                        .owner
+                        .as_ref()
+                        .map(|c| c.name.clone())
+                        .or_else(|| g.visitor.as_ref().map(|c| c.name.clone())),
+                    role: if owner_bound { "owner" } else { "visitor" }.to_string(),
+                    owner_bound,
+                    visitor_authorized,
+                }
             })
             .collect()
     }
@@ -190,7 +237,8 @@ impl ToolStore {
             .map(|g| g.url.clone())
     }
 
-    /// 绑定 token（端点注入用）。None = 未绑定/公开网关。
+    /// 会话用 token（端点注入用）。主人槽优先（全量 agent + 管理法），
+    /// 无主人槽回落访客槽（allowedAgents 范围内）。None = 未绑定/公开网关。
     pub fn gateway_token(&self, target: &str) -> Option<String> {
         self.data
             .lock()
@@ -198,7 +246,23 @@ impl ToolStore {
             .gateways
             .iter()
             .find(|g| g.target == target)
-            .and_then(|g| g.token.clone())
+            .and_then(|g| {
+                g.owner
+                    .as_ref()
+                    .map(|c| c.token.clone())
+                    .or_else(|| g.visitor.as_ref().map(|c| c.token.clone()))
+            })
+    }
+
+    /// 主人 token（👥 面板/管理法专用——Bound 连接，访客 token 打不开）。
+    pub fn gateway_owner_token(&self, target: &str) -> Option<String> {
+        self.data
+            .lock()
+            .unwrap()
+            .gateways
+            .iter()
+            .find(|g| g.target == target)
+            .and_then(|g| g.owner.as_ref().map(|c| c.token.clone()))
     }
 
     /// 收录远程网关（幂等，URL 以最新为准；不触碰绑定凭证）。
@@ -209,34 +273,38 @@ impl ToolStore {
             None => data.gateways.push(StoredGateway {
                 target: target.to_string(),
                 url: url.to_string(),
+                owner: None,
+                visitor: None,
                 token: None,
                 device_name: None,
-                role: default_gateway_role(),
+                role: None,
             }),
         }
         self.persist(&data);
     }
 
-    /// 记录配对结果（bindDevice 成功后调用，主人角色）。
+    /// 记录配对结果（bindDevice 成功后调用）——只写主人槽，
+    /// 访客槽里的授权凭证不受影响（双槽不互踢）。
     pub fn set_gateway_binding(&self, target: &str, token: &str, device_name: &str) {
         let mut data = self.data.lock().unwrap();
         if let Some(g) = data.gateways.iter_mut().find(|g| g.target == target) {
-            g.token = Some(token.to_string());
-            g.device_name = Some(device_name.to_string());
-            g.role = "owner".to_string();
+            g.owner = Some(StoredCredential {
+                token: token.to_string(),
+                name: device_name.to_string(),
+            });
             self.persist(&data);
         }
     }
 
-    /// 记录同意流授权（checkAccess 取票成功后调用，访客角色）。
-    /// 同一槽位：一个 webui 对一个网关持一把 token（先配对后授权不常见，
-    /// 后到的凭证覆盖——主人设备切访客角色的场景不值得保留两把）。
+    /// 记录同意流授权（checkAccess 取票成功后调用）——只写访客槽，
+    /// 主人绑定凭证不受影响（双槽不互踢）。
     pub fn set_gateway_authorized(&self, target: &str, token: &str, client_name: &str) {
         let mut data = self.data.lock().unwrap();
         if let Some(g) = data.gateways.iter_mut().find(|g| g.target == target) {
-            g.token = Some(token.to_string());
-            g.device_name = Some(client_name.to_string());
-            g.role = "visitor".to_string();
+            g.visitor = Some(StoredCredential {
+                token: token.to_string(),
+                name: client_name.to_string(),
+            });
             self.persist(&data);
         }
     }
@@ -541,32 +609,71 @@ mod tests {
     }
 
     #[test]
-    fn gateway_visitor_role_round_trip() {
-        // 第八刀：旧文件（无 role 字段）缺省 owner；同意流授权写 visitor。
+    fn gateway_dual_slot_no_clobber() {
+        // 第九刀：主人绑定与访客授权双槽——后到的凭证不再覆写先来的。
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store(tmp.path());
+        s.add_gateway("sv2", "agent://sv2.relay.aginx.net");
+
+        // 主人配对 → 主人槽
+        s.set_gateway_binding("sv2", "bound-token-1", "webui");
+        assert_eq!(s.gateway_owner_token("sv2").as_deref(), Some("bound-token-1"));
+        assert_eq!(s.gateway_token("sv2").as_deref(), Some("bound-token-1"));
+
+        // 同意流取票 → 访客槽；主人槽原样（旧单槽实现在这里覆写——回归点）
+        s.set_gateway_authorized("sv2", "ac-visitor-9", "小明");
+        assert_eq!(s.gateway_owner_token("sv2").as_deref(), Some("bound-token-1"), "访客授权不得覆写主人绑定");
+        let g = &s.gateways()[0];
+        assert!(g.owner_bound && g.visitor_authorized, "双身份并存");
+        assert_eq!(g.role, "owner", "会话/主展示优先主人身份");
+        assert_eq!(s.gateway_token("sv2").as_deref(), Some("bound-token-1"), "会话 token 主人优先");
+
+        // 重载后双槽持久
+        let s2 = store(tmp.path());
+        let g2 = &s2.gateways()[0];
+        assert!(g2.owner_bound && g2.visitor_authorized);
+        assert_eq!(s2.gateway_owner_token("sv2").as_deref(), Some("bound-token-1"));
+        assert_eq!(g2.device_name.as_deref(), Some("webui"), "展示名 = 主人设备名");
+
+        // 移网关 = 两把凭证一并清
+        s2.remove_gateway("sv2");
+        assert_eq!(s2.gateway_token("sv2"), None);
+    }
+
+    #[test]
+    fn gateway_visitor_only_falls_back() {
+        // 仅访客授权（没配对过）：会话用访客 token，主人面板无凭证。
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store(tmp.path());
+        s.add_gateway("sv3", "agent://sv3.relay.aginx.net");
+        s.set_gateway_authorized("sv3", "ac-only", "访客甲");
+        assert_eq!(s.gateway_owner_token("sv3"), None);
+        assert_eq!(s.gateway_token("sv3").as_deref(), Some("ac-only"));
+        let g = &s.gateways()[0];
+        assert!(g.bound && !g.owner_bound && g.visitor_authorized);
+        assert_eq!(g.role, "visitor");
+        assert_eq!(g.device_name.as_deref(), Some("访客甲"));
+    }
+
+    #[test]
+    fn gateway_legacy_single_slot_migrates() {
+        // 第八刀单槽文件：role=visitor 的凭证迁进访客槽；无 role 的迁主人槽。
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("external-tools.json");
         std::fs::write(
             &path,
-            r#"{"added":[],"contacts":{},"gateways":[{"target":"sv2","url":"agent://sv2.relay.aginx.net","token":"token-old"}],"remote_meta":{}}"#,
+            r#"{"gateways":[
+                {"target":"old-vis","url":"agent://old.relay.aginx.net","token":"ac-legacy","device_name":"小明","role":"visitor"},
+                {"target":"old-own","url":"agent://old.relay.aginx.net","token":"bound-legacy","device_name":"webui"}
+            ]}"#,
         )
         .unwrap();
         let s = ToolStore::load(path);
-        assert_eq!(s.gateways()[0].role, "owner", "旧条目缺省 owner");
-
-        s.set_gateway_authorized("sv2", "ac-new456", "小明");
-        assert_eq!(s.gateway_token("sv2").as_deref(), Some("ac-new456"));
-        let g = &s.gateways()[0];
-        assert_eq!(g.role, "visitor");
-        assert_eq!(g.device_name.as_deref(), Some("小明"));
-        assert!(g.bound);
-
-        // 重载后 visitor 角色持久
-        let s2 = ToolStore::load(tmp.path().join("external-tools.json"));
-        assert_eq!(s2.gateways()[0].role, "visitor");
-        assert_eq!(s2.gateway_token("sv2").as_deref(), Some("ac-new456"));
-
-        // 再配对则回到 owner（角色跟随最近一次凭证来源）
-        s2.set_gateway_binding("sv2", "token-xyz", "webui");
-        assert_eq!(s2.gateways()[0].role, "owner");
+        let gv = s.gateways().into_iter().find(|g| g.target == "old-vis").unwrap();
+        assert!(gv.visitor_authorized && !gv.owner_bound, "role=visitor 的单槽凭证进访客槽");
+        assert_eq!(s.gateway_token("old-vis").as_deref(), Some("ac-legacy"));
+        let go = s.gateways().into_iter().find(|g| g.target == "old-own").unwrap();
+        assert!(go.owner_bound && !go.visitor_authorized, "无 role 的单槽凭证进主人槽");
+        assert_eq!(s.gateway_owner_token("old-own").as_deref(), Some("bound-legacy"));
     }
 }

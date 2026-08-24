@@ -802,11 +802,19 @@ function renderGateways() {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'gw-chip' + (state.activeGateway === g.target ? ' on' : '');
-    const mark = g.bound ? (g.role === 'visitor' ? '👤' : '🔒') : (state.gwNeedsBind && state.gwNeedsBind[g.target] ? '⚠️' : '');
-    chip.title = g.bound
-      ? (g.role === 'visitor' ? `访客身份：${g.device_name || 'visitor'}（${g.url}）` : `已绑定设备：${g.device_name || 'webui'}（${g.url}）`)
-      : g.url;
-    const visBtn = g.bound && g.role !== 'visitor'
+    // 双槽身份（第九刀）：🔒=主人绑定 👤=访客授权，可并存
+    const ownerB = g.owner_bound !== undefined ? g.owner_bound : (g.bound && g.role !== 'visitor');
+    const visAuth = g.visitor_authorized !== undefined ? g.visitor_authorized : (g.bound && g.role === 'visitor');
+    const marks = [];
+    if (ownerB) marks.push('🔒');
+    if (visAuth) marks.push('👤');
+    if (!marks.length && state.gwNeedsBind && state.gwNeedsBind[g.target]) marks.push('⚠️');
+    const mark = marks.join('');
+    const tips = [];
+    if (ownerB) tips.push(`主人绑定：${g.device_name || 'webui'}`);
+    if (visAuth) tips.push('访客授权');
+    chip.title = tips.length ? `${tips.join(' · ')}（${g.url}）` : g.url;
+    const visBtn = ownerB
       ? ` <span class="gw-vis" title="访客管理（同意/吊销）">👥</span>` : '';
     chip.innerHTML = `${mark} ${escapeHtml(g.target)}${visBtn} <span class="gw-del" title="移除网关（连带联系人）">✕</span>`;
     chip.onclick = (e) => {
