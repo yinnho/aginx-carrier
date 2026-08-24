@@ -79,6 +79,10 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/tools/{id}/session", post(tools_set_session))
         // 历史会话列表：透传网关台账 sessions/list（§2.4.1）
         .route("/api/tool-sessions", get(tool_sessions))
+        // 远程网关联系人（webui 第五刀，统一 aginx 流程缺口3）
+        .route("/api/gateways", get(gateways_list).post(gateways_add))
+        .route("/api/gateways/{target}/remove", post(gateways_remove))
+        .route("/api/remote-agents", get(remote_agents))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             trust_middleware,
@@ -235,9 +239,65 @@ fn sse_frame(v: serde_json::Value) -> Event {
 
 // ── 接入本地工具（webui 第三刀）：网关 agent 经 agent:// 协议路由 ──
 
+/// 复合联系人 id 语法：`@<target>~<agent>`（第五刀）。
+/// `~` 分隔——URL 路径段安全（`/` 有 percent-encode 陷阱），裸 id =
+/// 本机网关 agent（第三刀语义，向后兼容）。
+fn parse_remote_contact(id: &str) -> Option<(&str, &str)> {
+    let rest = id.strip_prefix('@')?;
+    let (target, agent) = rest.split_once('~')?;
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    if ok(target) && ok(agent) {
+        Some((target, agent))
+    } else {
+        None
+    }
+}
+
+/// 联系人 id →（连接端点，对端 agent id）。裸 id = 本机网关配置；
+/// `@target~agent` = 地址簿远程网关（secret 复用本机同网凭证）。
+async fn endpoint_for_contact(
+    st: &Arc<WebState>,
+    id: &str,
+) -> Result<(crate::agent_client::AgentEndpoint, String), String> {
+    if let Some((target, agent)) = parse_remote_contact(id) {
+        let url = st
+            .tool_store
+            .gateway_url(target)
+            .ok_or_else(|| format!("远程网关 {target} 不在地址簿"))?;
+        let ep = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url)
+            .ok_or_else(|| format!("网关地址无效: {url}"))?;
+        Ok((ep, agent.to_string()))
+    } else {
+        let ep = crate::agent_client::AgentEndpoint::from_gateway_config()
+            .ok_or_else(|| "本机网关未配置（~/.aginx/config.toml [relay] 段缺失）".to_string())?;
+        Ok((ep, id.to_string()))
+    }
+}
+
 /// 网关 agent 现列：listAgents 透传 + 台账标记。网关/relay 不可达时
 /// 返回空列表 + gateway_error（前端显示网关状态条，联系人不受影响）。
+/// 已添加的远程联系人（复合 id）随 store 元数据一并下发——零网络。
 async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
+    let remote: Vec<serde_json::Value> = st
+        .tool_store
+        .added_remote()
+        .into_iter()
+        .map(|(id, m)| {
+            serde_json::json!({
+                "id": id,
+                "name": m.name,
+                "description": m.description,
+                "agent_type": m.agent_type,
+                "gateway": m.gateway,
+                "kind": "remote",
+                "added": true,
+            })
+        })
+        .collect();
     let tools = match gateway_call().await {
         Ok(agents) => agents
             .into_iter()
@@ -259,6 +319,7 @@ async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
                 .tool_store
                 .added()
                 .into_iter()
+                .filter(|id| !id.starts_with('@'))
                 .map(|id| {
                     serde_json::json!({
                         "id": id,
@@ -272,18 +333,62 @@ async fn tools_list(State(st): State<Arc<WebState>>) -> Response {
                 .collect::<Vec<_>>();
             return Json(serde_json::json!({
                 "tools": stale,
+                "remote": remote,
                 "gateway_error": e,
             }))
             .into_response();
         }
     };
-    Json(serde_json::json!({ "tools": tools })).into_response()
+    Json(serde_json::json!({ "tools": tools, "remote": remote })).into_response()
+}
+
+/// 添加联系人时可选带展示元数据（远程联系人——本机离线渲染用）。
+#[derive(Deserialize, Default)]
+struct AddBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    agent_type: Option<String>,
+    #[serde(default)]
+    gateway: Option<String>,
 }
 
 async fn tools_add(
     State(st): State<Arc<WebState>>,
     AxumPath(id): AxumPath<String>,
+    body: Option<Json<AddBody>>,
 ) -> Response {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    // 复合 id 必须语法合法且网关在地址簿（否则聊天时才报错，太晚）
+    if id.starts_with('@') {
+        let Some((target, _)) = parse_remote_contact(&id) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid remote contact id（应为 @网关~分身）"})),
+            )
+                .into_response();
+        };
+        if st.tool_store.gateway_url(target).is_none() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("远程网关 {target} 不在地址簿，先添加网关")})),
+            )
+                .into_response();
+        }
+        if let Some(name) = body.name {
+            st.tool_store.set_remote_meta(
+                &id,
+                crate::tool_store::StoredAgentMeta {
+                    name,
+                    description: body.description.unwrap_or_default(),
+                    agent_type: body.agent_type.unwrap_or_default(),
+                    gateway: body.gateway.unwrap_or_else(|| target.to_string()),
+                },
+            );
+        }
+    }
     st.tool_store.add(&id);
     info!(agent = %id, "网关工具已添加");
     StatusCode::CREATED.into_response()
@@ -334,13 +439,14 @@ struct ToolSessionsQuery {
 /// 历史会话列表：透传网关台账 sessions/list（§2.4.1——网关经手的轮按
 /// 注册名记账），同时下发该联系人当前续接 id（前端标"当前"）。
 /// 网关不可达时 200 + 空表 + gateway_error（对话框里提示，不炸）。
+/// 联系人 id 支持复合形式（远程网关台账 = 对方网关经手的轮）。
 async fn tool_sessions(
     State(st): State<Arc<WebState>>,
     Query(q): Query<ToolSessionsQuery>,
 ) -> Response {
     let sender_id = format!("web:{}", q.sender);
     let active = st.tool_store.session(&q.agent, &sender_id).0;
-    match gateway_sessions(&q.agent).await {
+    match sessions_for_contact(&st, &q.agent).await {
         Ok(sessions) => Json(serde_json::json!({
             "sessions": sessions,
             "active_session_id": active,
@@ -370,23 +476,168 @@ async fn gateway_call() -> Result<Vec<crate::agent_client::GatewayAgent>, String
     conn.list_agents().await
 }
 
-async fn gateway_sessions(
-    agent: &str,
+/// 联系人 id（含复合远程形式）→ 该网关台账会话列表。
+async fn sessions_for_contact(
+    st: &Arc<WebState>,
+    id: &str,
 ) -> Result<Vec<crate::agent_client::GatewaySession>, String> {
-    let mut conn = gateway_connect().await?;
-    conn.sessions_list(agent).await
+    let (ep, agent) = endpoint_for_contact(st, id).await?;
+    let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+    conn.initialize().await?;
+    conn.sessions_list(&agent).await
+}
+
+// ── 远程网关联系人（webui 第五刀：统一 aginx 流程缺口3） ──
+
+async fn gateways_list(State(st): State<Arc<WebState>>) -> Response {
+    let gateways: Vec<serde_json::Value> = st
+        .tool_store
+        .gateways()
+        .into_iter()
+        .map(|(target, url)| serde_json::json!({"target": target, "url": url}))
+        .collect();
+    Json(serde_json::json!({ "gateways": gateways })).into_response()
+}
+
+#[derive(Deserialize)]
+struct GatewayAddBody {
+    url: String,
+}
+
+/// 添加远程网关：先探活（connect + listAgents），通了才进地址簿——
+/// 地址簿里没有死地址。响应带该网关 agent 列表与已添加标记。
+async fn gateways_add(
+    State(st): State<Arc<WebState>>,
+    Json(body): Json<GatewayAddBody>,
+) -> Response {
+    let Some(ep) = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&body.url)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "地址无效，应为 agent://<id>.relay.<domain>"})),
+        )
+            .into_response();
+    };
+    let agents = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.list_agents().await
+    }
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({"error": format!("连不上对方网关: {e}")})),
+            )
+                .into_response()
+        }
+    };
+    let target = ep.target.clone();
+    st.tool_store.add_gateway(&target, &body.url);
+    info!(target = %target, "远程网关已收录");
+    let agents: Vec<serde_json::Value> = agents
+        .into_iter()
+        .map(|a| {
+            let cid = format!("@{target}~{}", a.id);
+            serde_json::json!({
+                "id": a.id,
+                "contact_id": cid,
+                "name": a.name,
+                "description": a.description,
+                "agent_type": a.agent_type,
+                "added": st.tool_store.is_added(&cid),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({"target": target, "agents": agents})).into_response()
+}
+
+async fn gateways_remove(
+    State(st): State<Arc<WebState>>,
+    AxumPath(target): AxumPath<String>,
+) -> Response {
+    if st.tool_store.gateway_url(&target).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    }
+    st.tool_store.remove_gateway(&target);
+    info!(target = %target, "远程网关已移除（联系人级联清理）");
+    StatusCode::CREATED.into_response()
+}
+
+#[derive(Deserialize)]
+struct RemoteAgentsQuery {
+    gateway: String,
+}
+
+/// 某个已收录远程网关的 agent 列表（工具页点开网关时拉取）。
+async fn remote_agents(State(st): State<Arc<WebState>>, Query(q): Query<RemoteAgentsQuery>) -> Response {
+    let Some(url) = st.tool_store.gateway_url(&q.gateway) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "网关不在地址簿"})),
+        )
+            .into_response();
+    };
+    let Some(ep) = crate::agent_client::AgentEndpoint::from_url_with_local_secret(&url) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "地址簿里的 URL 已失效"})),
+        )
+            .into_response();
+    };
+    let agents = match async {
+        let mut conn = crate::agent_client::AgentConn::connect(&ep).await?;
+        conn.initialize().await?;
+        conn.list_agents().await
+    }
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            return Json(
+                serde_json::json!({"agents": [], "gateway_error": e}),
+            )
+            .into_response()
+        }
+    };
+    let target = &q.gateway;
+    let agents: Vec<serde_json::Value> = agents
+        .into_iter()
+        .map(|a| {
+            let cid = format!("@{target}~{}", a.id);
+            serde_json::json!({
+                "id": a.id,
+                "contact_id": cid,
+                "name": a.name,
+                "description": a.description,
+                "agent_type": a.agent_type,
+                "added": st.tool_store.is_added(&cid),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({"agents": agents})).into_response()
 }
 
 /// 网关 agent 聊天：一次性 agent:// 连接，纯文本 chunk → SSE delta 帧，
 /// 终帧收割 session_id 入台账（下轮 --resume 续接）。cwd 不再传——
-/// 注册项绑定的 folder 就是会话锚定点（网关 spawn 落点）。
+/// 注册项绑定的 folder 就是会话锚定点（网关 spawn 落点）。联系人 id
+/// 支持复合形式（远程网关分身——sessionId 续接走对方 carrier 会话）。
 async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Response {
-    let Some(ep) = crate::agent_client::AgentEndpoint::from_gateway_config() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "本机网关未配置（~/.aginx/config.toml [relay] 段缺失）"})),
-        )
-            .into_response();
+    let (ep, agent_id) = match endpoint_for_contact(st, tool_id).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response()
+        }
     };
     let sender_id = format!("web:{}", body.sender_id);
     let (resume_id, _) = st.tool_store.session(tool_id, &sender_id);
@@ -404,7 +655,7 @@ async fn tool_chat(st: &Arc<WebState>, tool_id: &str, body: ChatBody) -> Respons
                 .await
                 .map_err(|e| format!("网关连接失败: {e}"))?;
             conn.initialize().await?;
-            conn.prompt(&tool_id, &message, resume_id.as_deref(), |text| {
+            conn.prompt(&agent_id, &message, resume_id.as_deref(), |text| {
                 send(serde_json::json!({"type": "delta", "text": text}));
                 true
             })

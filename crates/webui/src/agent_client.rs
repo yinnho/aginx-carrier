@@ -101,6 +101,17 @@ impl AgentEndpoint {
         })
     }
 
+    /// 解析任意 agent:// URL 并注入本机 relay secret——同一张 relay 网
+    /// 网级凭证共享（本机网关配置的 [relay] 段是真源）。跨网网关需要
+    /// 各自 secret 时再扩展 per-gateway 覆盖。
+    pub fn from_url_with_local_secret(url: &str) -> Option<Self> {
+        let mut ep = Self::parse_url(url)?;
+        if ep.relay_secret.is_none() {
+            ep.relay_secret = Self::from_gateway_config().and_then(|e| e.relay_secret);
+        }
+        Some(ep)
+    }
+
     /// 从本机网关配置 `~/.aginx/config.toml` 读端点（id/domain/port/
     /// use_tls/relay_secret）。网关未装或未配置时返回 None。
     pub fn from_gateway_config() -> Option<Self> {
@@ -418,6 +429,16 @@ mod tests {
         assert!(AgentEndpoint::parse_url("https://relay.aginx.net").is_none());
         assert!(AgentEndpoint::parse_url("agent://only.relay.").is_none());
         assert!(AgentEndpoint::parse_url("agent://.relay.x.com").is_none());
+    }
+
+    #[test]
+    fn from_url_keeps_parsed_fields_without_local_config() {
+        // 解析不依赖本机配置存在（secret 注入是尽力而为）
+        let ep = AgentEndpoint::from_url_with_local_secret("agent://sv1.relay.aginx.net:9443")
+            .unwrap();
+        assert_eq!(ep.target, "sv1");
+        assert_eq!(ep.port, 9443);
+        assert_eq!(ep.tls_domain, "relay.aginx.net");
     }
 
     #[test]

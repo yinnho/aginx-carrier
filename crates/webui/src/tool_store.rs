@@ -1,11 +1,16 @@
-//! 网关 agent 的添加台账 + 联系人记忆（webui 第三刀，批2 语义）。
+//! 网关 agent 的添加台账 + 联系人记忆（webui 第三刀，批2 语义；
+//! 第五刀扩远程网关地址簿）。
 //!
 //! `~/.aginx/carrier/webui/external-tools.json`：added 清单（哪些网关
 //! agent 进了联系人）+ per (agent, sender) 的联系人记忆（claude 真
-//! session_id 与消息流水）。会话列表不再本地记——历史会话对话框透传
-//! 网关台账 sessions/list（§2.4.1）；点选某条历史 → set_active_session
-//! 把续接 id 记到联系人，下轮 prompt 回喂。原子写：tmp + rename；
-//! 损坏重置为空（台账丢失只是重新添加，不致命）。
+//! session_id 与消息流水）+ 远程网关地址簿 + 远程联系人展示元数据。
+//! 会话列表不再本地记——历史会话对话框透传网关台账 sessions/list
+//!（§2.4.1）；点选某条历史 → set_active_session 把续接 id 记到联系人，
+//! 下轮 prompt 回喂。原子写：tmp + rename；损坏重置为空（台账丢失只
+//! 是重新添加，不致命）。
+//!
+//! 联系人 id 语法：裸 id = 本机网关 agent；`@<target>~<agent>` = 远程
+//! 网关（缺口3 统一 aginx 流程——用别人家分身走标准 agent:// 路径）。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,6 +35,28 @@ struct StoredContact {
     messages: Vec<StoredMessage>,
 }
 
+/// 远程网关地址簿条目（第五刀）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredGateway {
+    /// relay 路由 id（agent://<target>.relay.<domain> 的 target）
+    target: String,
+    /// 原始 URL（保留 domain/port，重连时重新解析）
+    url: String,
+}
+
+/// 远程联系人的展示元数据——本机不连远程也能渲染联系人列表
+///（网关离线时联系人不消失，聊天时才报错）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredAgentMeta {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub agent_type: String,
+    /// 所属远程网关 target
+    pub gateway: String,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StoreData {
     #[serde(default)]
@@ -37,6 +64,11 @@ struct StoreData {
     /// key = "{agent}/{sender}"
     #[serde(default)]
     contacts: HashMap<String, StoredContact>,
+    #[serde(default)]
+    gateways: Vec<StoredGateway>,
+    /// key = 复合联系人 id（@target~agent）
+    #[serde(default)]
+    remote_meta: HashMap<String, StoredAgentMeta>,
 }
 
 pub struct ToolStore {
@@ -99,7 +131,72 @@ impl ToolStore {
         data.added.retain(|a| a != id);
         let prefix = format!("{id}/");
         data.contacts.retain(|k, _| !k.starts_with(&prefix));
+        data.remote_meta.remove(id);
         self.persist(&data);
+    }
+
+    // ── 远程网关地址簿（第五刀） ──
+
+    pub fn gateways(&self) -> Vec<(String, String)> {
+        self.data
+            .lock()
+            .unwrap()
+            .gateways
+            .iter()
+            .map(|g| (g.target.clone(), g.url.clone()))
+            .collect()
+    }
+
+    pub fn gateway_url(&self, target: &str) -> Option<String> {
+        self.data
+            .lock()
+            .unwrap()
+            .gateways
+            .iter()
+            .find(|g| g.target == target)
+            .map(|g| g.url.clone())
+    }
+
+    /// 收录远程网关（幂等，URL 以最新为准）。
+    pub fn add_gateway(&self, target: &str, url: &str) {
+        let mut data = self.data.lock().unwrap();
+        match data.gateways.iter_mut().find(|g| g.target == target) {
+            Some(g) => g.url = url.to_string(),
+            None => data.gateways.push(StoredGateway {
+                target: target.to_string(),
+                url: url.to_string(),
+            }),
+        }
+        self.persist(&data);
+    }
+
+    /// 移除远程网关，级联清掉它名下全部远程联系人（added/记忆/元数据）。
+    pub fn remove_gateway(&self, target: &str) {
+        let mut data = self.data.lock().unwrap();
+        data.gateways.retain(|g| g.target != target);
+        let prefix = format!("@{target}~");
+        data.added.retain(|a| !a.starts_with(&prefix));
+        data.contacts.retain(|k, _| !k.starts_with(&prefix));
+        data.remote_meta.retain(|k, _| !k.starts_with(&prefix));
+        self.persist(&data);
+    }
+
+    // ── 远程联系人元数据 ──
+
+    pub fn set_remote_meta(&self, id: &str, meta: StoredAgentMeta) {
+        let mut data = self.data.lock().unwrap();
+        data.remote_meta.insert(id.to_string(), meta);
+        self.persist(&data);
+    }
+
+    /// 已添加的远程联系人（复合 id + 展示元数据），零网络即可渲染。
+    pub fn added_remote(&self) -> Vec<(String, StoredAgentMeta)> {
+        let data = self.data.lock().unwrap();
+        data.added
+            .iter()
+            .filter(|a| a.starts_with('@'))
+            .filter_map(|a| data.remote_meta.get(a).map(|m| (a.clone(), m.clone())))
+            .collect()
     }
 
     fn contact_key(agent: &str, sender: &str) -> String {
@@ -287,5 +384,55 @@ mod tests {
         assert_eq!(&ts[4..5], "-");
         assert_eq!(&ts[10..11], "T");
         assert_eq!(&ts[19..20], ".");
+    }
+
+    // ── 远程网关地址簿（第五刀） ──
+
+    #[test]
+    fn gateway_book_round_trip_and_cascade() {
+        let tmp = tempfile::tempdir().unwrap();
+        {
+            let s = store(tmp.path());
+            s.add_gateway("selvkwjv", "agent://selvkwjv.relay.aginx.net");
+            s.add_gateway("selvkwjv", "agent://selvkwjv.relay.aginx.net:8443"); // 更新 URL
+            s.add_gateway("other", "agent://other.relay.aginx.net");
+            assert_eq!(s.gateways().len(), 2);
+            assert_eq!(
+                s.gateway_url("selvkwjv").as_deref(),
+                Some("agent://selvkwjv.relay.aginx.net:8443")
+            );
+
+            // 远程联系人：复合 id + 元数据 + 消息
+            let cid = "@selvkwjv~clone-creator";
+            s.add(cid);
+            s.set_remote_meta(
+                cid,
+                StoredAgentMeta {
+                    name: "分身创造者".into(),
+                    description: "造分身".into(),
+                    agent_type: "aginx-carrier".into(),
+                    gateway: "selvkwjv".into(),
+                },
+            );
+            s.append_turn(cid, "web:u1", "你好", "收到", Some("sid-r1"));
+            assert_eq!(s.added_remote().len(), 1);
+            assert_eq!(s.added_remote()[0].1.gateway, "selvkwjv");
+
+            // 移网关：级联清联系人，别的网关不受影响
+            s.add("@other~agent1");
+            s.remove_gateway("selvkwjv");
+            assert!(s.gateway_url("selvkwjv").is_none());
+            assert!(!s.is_added(cid));
+            assert!(s.added_remote().is_empty());
+            let (sid, msgs) = s.session(cid, "web:u1");
+            assert_eq!(sid, None);
+            assert!(msgs.is_empty());
+            assert!(s.is_added("@other~agent1"));
+        }
+        // 持久化验证：重载后 other 网关和它的联系人还在
+        let s2 = store(tmp.path());
+        assert_eq!(s2.gateways().len(), 1);
+        assert_eq!(s2.gateways()[0].0, "other");
+        assert!(s2.is_added("@other~agent1"));
     }
 }

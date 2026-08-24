@@ -278,6 +278,25 @@ body {
 #tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding: 18px 24px; }
 #tools-grid .mkt-card button { align-self: flex-start; }
 
+/* 远程网关地址簿（第五刀） */
+#gw-add-row { display: flex; gap: 8px; padding: 10px 24px 4px; }
+#gw-add-row input {
+  flex: 1; max-width: 420px; padding: 7px 12px; border: 1px solid #d0d3d8;
+  border-radius: 4px; font-size: 13px; outline: none;
+}
+#gw-add-row input:focus { border-color: var(--green); }
+#gw-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 24px 0; }
+.gw-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border: 1px solid #d0d3d8; border-radius: 14px; background: #fff;
+  font-size: 12px; cursor: pointer;
+}
+.gw-chip.on { border-color: var(--green); color: var(--green); }
+.gw-del { color: #999; font-size: 11px; }
+.gw-del:hover { color: #c0392b; }
+#remote-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding: 12px 24px; }
+#remote-grid .mkt-card button { align-self: flex-start; }
+
 /* Hub key 弹窗 */
 #hubkey-dialog { border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25); padding: 0; width: 400px; max-width: 92vw; }
 #hubkey-dialog::backdrop { background: rgba(0,0,0,.3); }

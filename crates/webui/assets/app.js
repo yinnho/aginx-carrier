@@ -12,7 +12,11 @@ const state = {
   view: 'chat', // 'chat' | 'market' | 'detail' | 'tools'
   market: { q: '', page: 1, templates: [], hasMore: false, keyOk: true, hubEnv: '', hubUrl: '' },
   installing: false,
-  tools: [], // 网关 agent（/api/tools）；网关不可达时只含已添加的 stale 项
+  tools: [], // 本机网关 agent（/api/tools）；网关不可达时只含已添加的 stale 项
+  remoteContacts: [], // 远程联系人（/api/tools remote——store 元数据，零网络）
+  gateways: [], // 远程网关地址簿（/api/gateways）
+  remoteAgents: {}, // target -> 对方网关 agent 列表（点开网关时拉取）
+  activeGateway: null,
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -103,6 +107,21 @@ function renderContacts() {
       `<div class="meta"><div class="name">${escapeHtml(t.name || t.id)}</div>` +
       `<div class="msg">${escapeHtml(prev.slice(0, 40))}</div></div>`;
     el.onclick = () => selectTool(t);
+    contactList.appendChild(el);
+  }
+  // 远程联系人（第五刀）：别人家网关的分身，👤 徽标
+  for (const c of state.remoteContacts) {
+    const hay = `${c.name} ${c.id} ${c.description} ${c.gateway}`.toLowerCase();
+    if (q && !hay.includes(q)) continue;
+    const isCur = state.current && state.current.kind === 'gateway' && state.current.id === c.id;
+    const el = document.createElement('div');
+    el.className = 'chat_item' + (isCur ? ' active' : '');
+    const prev = previewText({ name: c.id, description: `远程 · ${c.gateway}`, model: '' });
+    el.innerHTML =
+      `<div class="avatar">👤<span class="presence on"></span></div>` +
+      `<div class="meta"><div class="name">${escapeHtml(c.name || c.id)}</div>` +
+      `<div class="msg">${escapeHtml(prev.slice(0, 40))}</div></div>`;
+    el.onclick = () => selectTool(c);
     contactList.appendChild(el);
   }
   if (!contactList.children.length) {
@@ -223,13 +242,16 @@ async function newSession() {
 
 async function selectTool(t) {
   if (state.streaming) return;
-  state.current = { kind: 'gateway', id: t.id, name: t.name || t.id, emoji: '🖥' };
+  const emoji = t.gateway ? '👤' : '🖥';
+  state.current = { kind: 'gateway', id: t.id, name: t.name || t.id, emoji };
   renderContacts();
   $('chat-empty').classList.add('hidden');
   $('chat-active').classList.remove('hidden');
-  $('chat-avatar').textContent = '🖥';
+  $('chat-avatar').textContent = emoji;
   $('chat-name').textContent = t.name || t.id;
-  $('chat-sub').textContent = `网关 · ${t.agent_type || 'agent'} · ${t.id}`;
+  $('chat-sub').textContent = t.gateway
+    ? `远程 · ${t.gateway} · ${t.agent_type || 'agent'}`
+    : `网关 · ${t.agent_type || 'agent'} · ${t.id}`;
   $('sessions-btn').classList.remove('hidden');
   setStatus('', false);
   await applyHistory(t.id);
@@ -352,9 +374,13 @@ async function sendMessage() {
           } else if (ev.type === 'done') {
             if (!acc && ev.response) { acc = ev.response; bubble.textContent = acc; }
             if (ev.cost_usd != null) {
-              // 网关工具轮：真金白银计量（cost/duration），不折算 tok/轮
+              // claude 等带真金白银计量的轮（cost/duration）
               const dur = ev.duration_ms != null ? `${(ev.duration_ms / 1000).toFixed(1)}s` : '?';
               setStatus(`完成 · $${Number(ev.cost_usd).toFixed(4)} · ${dur}`, false);
+            } else if (ev.duration_ms != null) {
+              // 网关路径 tokens 字段=轮数（批2）；carrier 方言无定价 → 秒+轮数
+              const dur = `${(ev.duration_ms / 1000).toFixed(1)}s`;
+              setStatus(`完成 · ${dur} · ${ev.tokens ?? '?'} 轮`, false);
             } else {
               setStatus(`完成 · ${ev.tokens ?? '?'} tok · ${ev.iterations ?? '?'} 轮`, false);
             }
@@ -717,20 +743,165 @@ async function loadTools() {
   try {
     const data = await apiGet('/api/tools');
     state.tools = data.tools || [];
+    state.remoteContacts = data.remote || [];
     gwErr = data.gateway_error || '';
   } catch (e) {
     state.tools = [];
+    state.remoteContacts = [];
     gwErr = e.message;
   }
   const banner = $('tools-banner');
   if (gwErr) {
-    banner.textContent = `网关不可达：${gwErr}——已添加工具保留在联系人，恢复后可用`;
+    banner.textContent = `本机网关不可达：${gwErr}——已添加工具保留在联系人，恢复后可用（远程联系人不受影响）`;
     banner.classList.remove('hidden');
   } else {
     banner.classList.add('hidden');
   }
   renderTools();
   renderContacts();
+}
+
+// ---------- 远程网关地址簿（第五刀：用别人家的分身走标准 agent:// 流程） ----------
+
+async function loadGateways() {
+  try {
+    const data = await apiGet('/api/gateways');
+    state.gateways = data.gateways || [];
+  } catch (e) {
+    state.gateways = [];
+  }
+  renderGateways();
+  // 只有一个网关时自动展开它的 agent 列表
+  if (!state.activeGateway && state.gateways.length === 1) {
+    await loadRemoteAgents(state.gateways[0].target);
+  }
+}
+
+function renderGateways() {
+  const list = $('gw-list');
+  list.innerHTML = '';
+  if (!state.gateways.length) {
+    list.innerHTML = '<div class="cwd-row-item cwd-dim">还没有远程网关——输入对方 agent:// 地址连接</div>';
+    return;
+  }
+  for (const g of state.gateways) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'gw-chip' + (state.activeGateway === g.target ? ' on' : '');
+    chip.title = g.url;
+    chip.innerHTML = `${escapeHtml(g.target)} <span class="gw-del" title="移除网关（连带联系人）">✕</span>`;
+    chip.onclick = (e) => {
+      if (e.target.classList.contains('gw-del')) removeGateway(g.target);
+      else loadRemoteAgents(g.target);
+    };
+    list.appendChild(chip);
+  }
+}
+
+async function addGateway() {
+  const url = $('gw-url').value.trim();
+  if (!url) return;
+  const btn = $('gw-add-btn');
+  btn.disabled = true;
+  btn.textContent = '连接中…';
+  try {
+    const d = await apiSend('/api/gateways', 'POST', { url });
+    state.activeGateway = d.target;
+    state.remoteAgents[d.target] = d.agents || [];
+    $('gw-url').value = '';
+    await loadGateways();
+    renderRemoteAgents();
+  } catch (e) {
+    alert(`连接失败：${e.message}`);
+  }
+  btn.disabled = false;
+  btn.textContent = '连接';
+}
+
+async function loadRemoteAgents(target) {
+  state.activeGateway = target;
+  renderGateways();
+  $('remote-grid').innerHTML = '<div class="mkt-loading">拉取对方网关 agent 列表…</div>';
+  try {
+    const d = await apiGet(`/api/remote-agents?gateway=${encodeURIComponent(target)}`);
+    if (d.gateway_error) {
+      $('remote-grid').innerHTML = `<div class="mkt-loading mkt-err">对方网关不可达：${escapeHtml(d.gateway_error)}</div>`;
+      return;
+    }
+    state.remoteAgents[target] = d.agents || [];
+  } catch (e) {
+    $('remote-grid').innerHTML = `<div class="mkt-loading mkt-err">拉取失败：${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  renderRemoteAgents();
+}
+
+function renderRemoteAgents() {
+  const grid = $('remote-grid');
+  grid.innerHTML = '';
+  const t = state.activeGateway;
+  if (!t || !state.remoteAgents[t]) return;
+  const agents = state.remoteAgents[t];
+  if (!agents.length) {
+    grid.innerHTML = '<div class="mkt-loading">对方网关没有可列出的 agent</div>';
+    return;
+  }
+  for (const a of agents) {
+    const card = document.createElement('div');
+    card.className = 'mkt-card';
+    card.innerHTML =
+      `<div class="mkt-card-name">👤 ${escapeHtml(a.name || a.id)}` +
+      `<span class="mkt-badge">${escapeHtml(a.agent_type || 'agent')}</span>` +
+      `${a.added ? '<span class="mkt-badge ok">已添加</span>' : ''}</div>` +
+      `<div class="mkt-card-desc">${escapeHtml((a.description || '').slice(0, 90) || '（无描述）')}</div>` +
+      `<div class="mkt-card-meta"><span class="mkt-card-id">${escapeHtml(a.id)}</span>` +
+      `<span>· 算力在 ${escapeHtml(t)} 家 · 会话凭 sessionId 续接</span></div>`;
+    const btn = document.createElement('button');
+    btn.className = a.added ? 'btn-ghost' : 'btn-primary';
+    btn.textContent = a.added ? '移除（清会话）' : '添加到联系人';
+    btn.onclick = async () => {
+      if (a.added && !confirm(`移除 ${a.name || a.id}？本地聊天记录会一并清掉（对方网关的会话台账不受影响）。`)) return;
+      btn.disabled = true;
+      try {
+        await apiSend(`/api/tools/${encodeURIComponent(a.contact_id)}/${a.added ? 'remove' : 'add'}`, 'POST',
+          a.added ? {} : { name: a.name, description: a.description, agent_type: a.agent_type, gateway: t });
+        a.added = !a.added;
+      } catch (e) {
+        btn.disabled = false;
+        return;
+      }
+      if (!a.added && state.current && state.current.kind === 'gateway' && state.current.id === a.contact_id) {
+        state.current = null;
+        $('chat-active').classList.add('hidden');
+        $('chat-empty').classList.remove('hidden');
+      }
+      await loadTools();
+      renderRemoteAgents();
+    };
+    card.appendChild(btn);
+    grid.appendChild(card);
+  }
+}
+
+async function removeGateway(target) {
+  if (!confirm(`移除网关 ${target}？它名下的远程联系人和本地聊天记录会一并清掉。`)) return;
+  try {
+    await apiSend(`/api/gateways/${encodeURIComponent(target)}/remove`, 'POST', {});
+  } catch (e) {
+    alert(`移除失败：${e.message}`);
+    return;
+  }
+  if (state.activeGateway === target) {
+    state.activeGateway = null;
+    $('remote-grid').innerHTML = '';
+  }
+  if (state.current && state.current.kind === 'gateway' && state.current.id.startsWith(`@${target}~`)) {
+    state.current = null;
+    $('chat-active').classList.add('hidden');
+    $('chat-empty').classList.remove('hidden');
+  }
+  await loadGateways();
+  await loadTools();
 }
 
 function renderTools() {
@@ -792,12 +963,22 @@ function wireEvents() {
   $('banner').onclick = openSettings;
   $('search-input').addEventListener('input', renderContacts);
 
-  // 接入本地工具页（第三刀）
+  // 接入本地工具页（第三刀 + 第五刀远程网关）
   $('tools-btn').onclick = () => {
     showView('tools');
     loadTools();
+    loadGateways();
   };
   $('tools-back').onclick = () => showView('chat');
+
+  // 远程网关地址簿
+  $('gw-add-btn').onclick = addGateway;
+  $('gw-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      addGateway();
+    }
+  });
 
   // 历史会话（网关台账）：点选续接 / 新建
   $('sessions-btn').onclick = openSessions;
