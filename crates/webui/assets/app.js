@@ -18,6 +18,8 @@ const state = {
   remoteAgents: {}, // target -> 对方网关 agent 列表（点开网关时拉取）
   gwNeedsBind: {}, // target -> true：私有网关待配对（探活/listAgents 被拒时置位）
   activeGateway: null,
+  localGateway: null, // 本机网关 {target,url}（出码端用；null=未配置藏分享钮）
+  pendingScanAgent: null, // {target,agent}：扫码/手输带了 /分身名 后缀，绑定后自动加联系人直达会话
   senderId:
     localStorage.getItem('aginx_sender') ||
     'w' + Math.random().toString(36).slice(2, 10),
@@ -126,7 +128,7 @@ function renderContacts() {
     contactList.appendChild(el);
   }
   if (!contactList.children.length) {
-    contactList.innerHTML = `<div class="empty-list">${q ? '无匹配联系人' : '还没有联系人<br>点 ⟳ 刷新 · ＋ 装分身 · 🖥 接工具'}</div>`;
+    contactList.innerHTML = `<div class="empty-list">${q ? '无匹配联系人' : '还没有联系人<br>点 ⟳ 刷新 · ＋ 添加（制作/扫码/市场）'}</div>`;
   }
 }
 
@@ -142,6 +144,7 @@ async function selectAgent(a) {
   $('chat-name').textContent = a.display_name || a.name;
   $('chat-sub').textContent = `${a.name} · ${a.model || '?'} · ${a.state === 'Running' ? '在线' : '离线'}`;
   $('sessions-btn').classList.add('hidden');
+  updateShareBtn();
   setStatus('', false);
   await applyHistory(a.name);
   scrollChat();
@@ -254,6 +257,7 @@ async function selectTool(t) {
     ? `远程 · ${t.gateway} · ${t.agent_type || 'agent'}`
     : `网关 · ${t.agent_type || 'agent'} · ${t.id}`;
   $('sessions-btn').classList.remove('hidden');
+  updateShareBtn();
   setStatus('', false);
   await applyHistory(t.id);
   scrollChat();
@@ -879,6 +883,12 @@ async function bindGateway(target, pairCode) {
     delete state.gwNeedsBind[target];
     state.remoteAgents[target] = d.agents || [];
     await loadGateways();
+    // 扫码带 /分身名 后缀的客服码：绑定完直达会话，不停在工具页
+    const pend = state.pendingScanAgent;
+    if (pend && pend.target === target) {
+      await autoAddAgent(target, pend.agent, d.agents);
+      return;
+    }
     renderRemoteAgents();
   } catch (e) {
     alert(`配对失败：${e.message}`);
@@ -956,6 +966,273 @@ async function removeGateway(target) {
   }
   await loadGateways();
   await loadTools();
+}
+
+// ---------- ＋ 菜单（第七刀：制作/扫码/添加agent/市场 四入口） ----------
+
+function togglePlusMenu(show) {
+  const m = $('plus-menu');
+  m.classList.toggle('hidden', show === undefined ? !m.classList.contains('hidden') : !show);
+}
+
+async function menuCreate() {
+  togglePlusMenu(false);
+  const cc = state.agents.find((a) => a.name === 'clone-creator');
+  if (!cc) {
+    alert('克隆大师（clone-creator）不在本机——点 ⟳ 刷新重试；它随 carrier 内嵌，缺失属异常');
+    return;
+  }
+  showView('chat');
+  await selectAgent(cc);
+}
+
+function menuScan() { togglePlusMenu(false); openScan(); }
+function menuAddAgent() { togglePlusMenu(false); openAddAgent(); }
+function menuMarket() {
+  togglePlusMenu(false);
+  showView('market');
+  if (!state.market.templates.length) loadMarket(true);
+}
+
+// ---------- agent:// 地址解析与添加（扫码/手输共用管线，第七刀） ----------
+
+/// `agent://<id>.relay.<domain>[:port][/<agent>]` → {url,target,agent}；
+/// 与后端 AgentEndpoint::parse_url 同形（此处只做入口过滤，真校验在后端）。
+function parseAgentUrl(raw) {
+  const m = /^agent:\/\/([A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)*\.relay\.[A-Za-z0-9.-]+(?::\d+)?)(?:\/([A-Za-z0-9_-]+))?\/?$/.exec(
+    String(raw || '').trim()
+  );
+  if (!m) return null;
+  return { url: `agent://${m[1]}`, target: m[1].split('.')[0], agent: m[2] || null };
+}
+
+/// 扫码/手输统一落点：加网关（探活三步走在后端）→ needs_bind 先配对 →
+/// 带 /分身名 后缀（客服码）自动加联系人直达会话，否则落工具页选人。
+async function handleAgentUrl(raw, statusEl) {
+  const parsed = parseAgentUrl(raw);
+  if (!parsed) {
+    const msg = '不是有效的 agent:// 地址（应为 agent://<id>.relay.<domain>[/分身名]）';
+    if (statusEl) statusEl.textContent = msg; else alert(msg);
+    return false;
+  }
+  state.pendingScanAgent = parsed.agent ? { target: parsed.target, agent: parsed.agent } : null;
+  if (statusEl) statusEl.textContent = '连接中…';
+  try {
+    const d = await apiSend('/api/gateways', 'POST', { url: parsed.url });
+    state.activeGateway = d.target;
+    state.remoteAgents[d.target] = d.agents || [];
+    if (d.needs_bind) state.gwNeedsBind[d.target] = true;
+    await loadGateways();
+    await afterGatewayAdded(d);
+    return true;
+  } catch (e) {
+    const msg = `连接失败：${e.message}`;
+    if (statusEl) statusEl.textContent = msg; else alert(msg);
+    return false;
+  }
+}
+
+/// 网关就绪后的落点分叉。
+async function afterGatewayAdded(d) {
+  if (d.needs_bind) {
+    // 私有网关：落工具页，renderRemoteAgents 会给配对码输入行；
+    // pendingScanAgent 记着客服码的后缀，绑定成功后续接
+    showView('tools');
+    renderRemoteAgents();
+    return;
+  }
+  if (state.pendingScanAgent && state.pendingScanAgent.target === d.target) {
+    await autoAddAgent(d.target, state.pendingScanAgent.agent, d.agents);
+    return;
+  }
+  showView('tools');
+  renderRemoteAgents();
+}
+
+/// 自动加远程联系人并直达会话（微信「扫一扫加好友」的落点）。
+async function autoAddAgent(target, agentId, agents) {
+  const found = (agents || []).find((a) => a.id === agentId);
+  if (!found) {
+    // 对方网关没有这个 agent：落工具页自己挑，不硬崩
+    showView('tools');
+    renderRemoteAgents();
+    return;
+  }
+  if (!found.added) {
+    await apiSend(`/api/tools/${encodeURIComponent(found.contact_id)}/add`, 'POST', {
+      name: found.name, description: found.description, agent_type: found.agent_type, gateway: target,
+    });
+    await loadTools();
+  }
+  const c = state.remoteContacts.find((x) => x.id === found.contact_id);
+  if (c) {
+    showView('chat');
+    await selectTool(c);
+  } else {
+    showView('tools');
+    renderRemoteAgents();
+  }
+  state.pendingScanAgent = null;
+}
+
+// ---------- 扫一扫（getUserMedia + jsQR + 选图兜底） ----------
+
+let scanStream = null;
+let scanRAF = 0;
+
+async function openScan() {
+  $('scan-status').textContent = '对准 agent:// 分享二维码';
+  $('scan-file').value = '';
+  $('scan-dialog').showModal();
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    const v = $('scan-video');
+    v.srcObject = scanStream;
+    await v.play();
+    scanLoop();
+  } catch (e) {
+    $('scan-status').textContent = `摄像头不可用（${e.message}）——用下方「选二维码图片」`;
+  }
+}
+
+function stopScan() {
+  if (scanRAF) { cancelAnimationFrame(scanRAF); scanRAF = 0; }
+  if (scanStream) { scanStream.getTracks().forEach((t) => t.stop()); scanStream = null; }
+  const v = $('scan-video');
+  if (v) v.srcObject = null;
+}
+
+function scanLoop() {
+  const v = $('scan-video');
+  const c = $('scan-canvas');
+  if (v.readyState >= v.HAVE_ENOUGH_DATA && v.videoWidth) {
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(v, 0, 0);
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const code = window.jsQR(img.data, img.width, img.height, { inversionAttempts: 'attemptBoth' });
+    if (code && code.data) { onScanned(code.data); return; }
+  }
+  scanRAF = requestAnimationFrame(scanLoop);
+}
+
+function onScanned(text) {
+  if (!String(text || '').startsWith('agent://')) {
+    $('scan-status').textContent = `解出「${String(text).slice(0, 40)}」不是 agent:// 分享码，继续扫…`;
+    scanRAF = requestAnimationFrame(scanLoop);
+    return;
+  }
+  stopScan();
+  $('scan-dialog').close();
+  handleAgentUrl(text);
+}
+
+// 选二维码图片兜底（截图/相册——E2E 也走这条路）
+function scanFromFile(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const c = $('scan-canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height);
+    const code = window.jsQR(d.data, d.width, d.height, { inversionAttempts: 'attemptBoth' });
+    URL.revokeObjectURL(url);
+    if (code && code.data) onScanned(code.data);
+    else $('scan-status').textContent = '图里没解出二维码——换一张，或关掉改手输';
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); $('scan-status').textContent = '图片读不出来'; };
+  img.src = url;
+}
+
+// ---------- 添加 agent（手输：无码场景，如手机绑电脑的 claude） ----------
+
+function openAddAgent() {
+  $('aa-url').value = '';
+  $('aa-status').textContent = '可带 /分身名 后缀直达该联系人；私有网关连接后按提示输配对码。';
+  $('add-agent-dialog').showModal();
+  $('aa-url').focus();
+}
+
+async function addAgentSubmit() {
+  const url = $('aa-url').value.trim();
+  if (!url) { $('aa-status').textContent = '先输入 agent:// 地址'; return; }
+  const ok = await handleAgentUrl(url, $('aa-status'));
+  if (ok) $('add-agent-dialog').close();
+}
+
+// ---------- 分享出码（聊天头部 📤 → agent:// 二维码） ----------
+
+async function loadLocalGateway() {
+  try {
+    state.localGateway = await apiGet('/api/local-gateway');
+  } catch (e) {
+    state.localGateway = null;
+  }
+}
+
+/// 当前会话联系人的分享地址：分身/本机工具 = 本机网关 + 名；
+/// 远程联系人 @target~agent = 地址簿网关 url + 分身名。
+function currentShareUrl() {
+  const cur = state.current;
+  if (!cur) return null;
+  if (cur.kind === 'gateway' && cur.id.startsWith('@')) {
+    const [target, agent] = cur.id.slice(1).split('~');
+    const g = state.gateways.find((x) => x.target === target);
+    return g && g.url ? `${g.url}/${agent}` : null;
+  }
+  const lg = state.localGateway;
+  if (!lg || !lg.url) return null;
+  return cur.kind === 'gateway' ? `${lg.url}/${cur.id}` : `${lg.url}/${cur.name}`;
+}
+
+function updateShareBtn() {
+  $('share-btn').classList.toggle('hidden', !currentShareUrl());
+}
+
+function openShare() {
+  const url = currentShareUrl();
+  if (!url) { alert('拿不到分享地址（本机网关未配置或地址簿缺项）'); return; }
+  $('share-url').textContent = url;
+  const qr = window.qrcode(0, 'M'); // typeNumber 0 = 按内容自适应
+  qr.addData(url);
+  qr.make();
+  const n = qr.getModuleCount();
+  const cell = 8;
+  const margin = 4; // 静区（模块数）
+  const c = $('share-qr');
+  c.width = c.height = (n + margin * 2) * cell;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = '#000';
+  for (let r = 0; r < n; r++) {
+    for (let col = 0; col < n; col++) {
+      if (qr.isDark(r, col)) {
+        ctx.fillRect((margin + col) * cell, (margin + r) * cell, cell, cell);
+      }
+    }
+  }
+  $('share-dialog').showModal();
+}
+
+async function copyShareUrl() {
+  const url = $('share-url').textContent;
+  try {
+    await navigator.clipboard.writeText(url);
+    $('share-copy').textContent = '已复制';
+    setTimeout(() => { $('share-copy').textContent = '复制地址'; }, 1200);
+  } catch (e) {
+    // 剪贴板不可用（非安全上下文）——选中地址让用户 Cmd+C
+    const r = document.createRange();
+    r.selectNodeContents($('share-url'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
 }
 
 function renderTools() {
@@ -1039,11 +1316,33 @@ function wireEvents() {
   $('sessions-close').onclick = () => $('sessions-dialog').close();
   $('sessions-new').onclick = newSession;
 
-  // 装分身页
-  $('market-btn').onclick = () => {
-    showView('market');
-    if (!state.market.templates.length) loadMarket(true);
-  };
+  // ＋ 菜单（第七刀）：制作分身 / 扫码 / 手输 agent:// / 市场
+  $('market-btn').onclick = () => togglePlusMenu();
+  $('pm-create').onclick = menuCreate;
+  $('pm-scan').onclick = menuScan;
+  $('pm-addagent').onclick = menuAddAgent;
+  $('pm-market').onclick = menuMarket;
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#plus-menu') && !e.target.closest('#market-btn')) togglePlusMenu(false);
+  });
+
+  // 扫一扫 / 手输 / 分享
+  $('scan-cancel').onclick = () => { stopScan(); $('scan-dialog').close(); };
+  $('scan-dialog').addEventListener('close', stopScan);
+  $('scan-file').addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) scanFromFile(e.target.files[0]);
+  });
+  $('aa-cancel').onclick = () => $('add-agent-dialog').close();
+  $('aa-go').onclick = addAgentSubmit;
+  $('aa-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      addAgentSubmit();
+    }
+  });
+  $('share-btn').onclick = openShare;
+  $('share-close').onclick = () => $('share-dialog').close();
+  $('share-copy').onclick = copyShareUrl;
   let mktSearchTimer = null;
   $('mkt-search').addEventListener('input', () => {
     clearTimeout(mktSearchTimer);
@@ -1069,7 +1368,7 @@ function wireEvents() {
 
 async function boot() {
   wireEvents();
-  await Promise.all([loadAgents(), loadBrain(), loadTools()]);
+  await Promise.all([loadAgents(), loadBrain(), loadTools(), loadLocalGateway(), loadGateways()]);
   if (brainMissing()) openSettings();
 }
 

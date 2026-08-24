@@ -12,10 +12,16 @@
       <span id="brand-mark">aginx</span>
       <div id="side-actions">
         <button id="tools-btn" class="icon-btn" title="接入本地工具（网关 agent）">🖥</button>
-        <button id="market-btn" class="icon-btn" title="装分身（市场）">＋</button>
+        <button id="market-btn" class="icon-btn" title="添加（菜单）">＋</button>
         <button id="refresh-btn" class="icon-btn" title="刷新">⟳</button>
         <button id="settings-btn" class="icon-btn" title="设置">⚙</button>
       </div>
+    </div>
+    <div id="plus-menu" class="hidden">
+      <button id="pm-create" type="button">🧬 制作分身<span class="pm-sub">跟克隆大师聊着造</span></button>
+      <button id="pm-scan" type="button">📷 扫码添加分身<span class="pm-sub">扫别人的分享码</span></button>
+      <button id="pm-addagent" type="button">🔗 添加 agent<span class="pm-sub">输 agent:// 地址</span></button>
+      <button id="pm-market" type="button">🛍 装分身<span class="pm-sub">DupHub 市场</span></button>
     </div>
     <div id="side-search"><input id="search-input" type="text" placeholder="搜索" autocomplete="off"></div>
     <div id="contact-list"></div>
@@ -37,6 +43,7 @@
           <div id="chat-name">—</div>
           <div id="chat-sub">—</div>
         </div>
+        <button id="share-btn" class="cwd-btn hidden" type="button" title="分享二维码（agent:// 地址）">📤 分享</button>
         <button id="sessions-btn" class="cwd-btn hidden" type="button" title="历史会话（网关台账）">🕐 历史会话</button>
         <div id="statusbar"><span id="spinner" class="hidden"></span><span id="status-text"></span></div>
       </header>
@@ -135,6 +142,47 @@
     </form>
   </dialog>
 
+  <dialog id="scan-dialog">
+    <form onsubmit="return false">
+      <h3>扫码添加分身</h3>
+      <video id="scan-video" playsinline muted></video>
+      <canvas id="scan-canvas" class="hidden"></canvas>
+      <div class="hint" id="scan-status">对准 agent:// 分享二维码</div>
+      <div class="hint">没有摄像头或扫不了？选一张二维码截图，或关掉改用「＋ → 添加 agent」手输地址。</div>
+      <div class="dialog-actions">
+        <label class="btn-ghost scan-file-label">选二维码图片<input id="scan-file" type="file" accept="image/*" hidden></label>
+        <button type="button" id="scan-cancel" class="btn-primary">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="add-agent-dialog">
+    <form onsubmit="return false">
+      <h3>添加 agent</h3>
+      <label>agent:// 地址<input id="aa-url" type="text" placeholder="agent://对方网关id.relay.aginx.net/分身名" autocomplete="off"></label>
+      <div class="hint" id="aa-status">可带 /分身名 后缀直达该联系人；私有网关连接后按提示输配对码。</div>
+      <div class="dialog-actions">
+        <button type="button" id="aa-cancel" class="btn-ghost">取消</button>
+        <button type="button" id="aa-go" class="btn-primary">连接</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="share-dialog">
+    <form onsubmit="return false">
+      <h3>分享分身</h3>
+      <canvas id="share-qr"></canvas>
+      <div id="share-url" class="share-url"></div>
+      <div class="hint">对方在 aginx 里「＋ → 扫码添加分身」扫这个码即可（公开网关即扫即用；私有网关还需你给的配对码）。</div>
+      <div class="dialog-actions">
+        <button type="button" id="share-copy" class="btn-ghost">复制地址</button>
+        <button type="button" id="share-close" class="btn-primary">关闭</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/assets/vendor-qrcode.js"></script>
+  <script src="/assets/vendor-jsqr.js"></script>
   <script src="/assets/app.js"></script>
 </body>
 </html>

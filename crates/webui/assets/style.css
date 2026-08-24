@@ -35,6 +35,7 @@ body {
   background: var(--side-bg);
   display: flex; flex-direction: column;
   color: #fff;
+  position: relative; /* ＋ 菜单（#plus-menu absolute）的锚 */
 }
 #side-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 17px 10px; }
 #brand-mark { font-weight: 600; font-size: 15px; color: #d5dbe1; letter-spacing: .5px; }
@@ -322,3 +323,40 @@ body {
   border: 1px solid #d0d3d8; border-radius: 4px; font-size: 13px; outline: none;
 }
 #hubkey-dialog input:focus { border-color: var(--green); }
+
+/* ---------- ＋ 菜单（第七刀：微信式加号弹出菜单） ---------- */
+#plus-menu {
+  position: absolute; top: 52px; right: 12px; z-index: 30;
+  background: #3a3f45; border-radius: 6px; padding: 6px 0;
+  box-shadow: 0 6px 24px rgba(0,0,0,.4); min-width: 190px;
+}
+#plus-menu button {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  background: none; border: 0; color: #fff; font-size: 13.5px;
+  padding: 9px 16px; cursor: pointer; text-align: left; font-family: inherit;
+}
+#plus-menu button:hover { background: var(--side-hover); }
+#plus-menu .pm-sub { font-size: 11px; color: var(--side-dim); }
+
+/* ---------- 扫一扫 / 手输 / 分享弹窗（第七刀） ---------- */
+#scan-dialog, #add-agent-dialog, #share-dialog {
+  border: 0; border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+  padding: 0; width: 400px; max-width: 92vw;
+}
+#scan-dialog::backdrop, #add-agent-dialog::backdrop, #share-dialog::backdrop { background: rgba(0,0,0,.3); }
+#scan-dialog form, #add-agent-dialog form, #share-dialog form { padding: 22px 24px; }
+#scan-dialog h3, #add-agent-dialog h3, #share-dialog h3 { font-size: 16px; margin-bottom: 12px; }
+#scan-video { width: 100%; max-height: 300px; background: #111; border-radius: 6px; object-fit: contain; }
+.scan-file-label { display: inline-block; }
+#add-agent-dialog label { display: block; font-size: 13px; color: #555; margin-bottom: 12px; }
+#add-agent-dialog input[type=text] {
+  display: block; width: 100%; margin-top: 4px; padding: 7px 10px;
+  border: 1px solid #d0d3d8; border-radius: 4px; font-size: 13px; outline: none;
+}
+#add-agent-dialog input:focus { border-color: var(--green); }
+#share-qr { display: block; margin: 4px auto 12px; }
+.share-url {
+  font: 12px ui-monospace, Menlo, monospace; color: #333; word-break: break-all;
+  background: #f2f3f5; border-radius: 4px; padding: 7px 10px; margin-bottom: 10px;
+  user-select: all;
+}

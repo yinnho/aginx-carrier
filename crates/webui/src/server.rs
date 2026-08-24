@@ -23,6 +23,10 @@ use crate::trust;
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 const APP_JS: &str = include_str!("../assets/app.js");
+// 第七刀 vendored：qrcode-generator（MIT, Arase）出码 + jsQR（Apache-2.0）扫码。
+// 纯 <script> 全局导出（window.qrcode / window.jsQR），无构建链。
+const VENDOR_QRCODE_JS: &str = include_str!("../assets/vendor-qrcode.js");
+const VENDOR_JSQR_JS: &str = include_str!("../assets/vendor-jsqr.js");
 
 pub struct WebState {
     pub(crate) kernel: Arc<CarrierKernel>,
@@ -62,6 +66,8 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/", get(index))
         .route("/assets/style.css", get(style_css))
         .route("/assets/app.js", get(app_js))
+        .route("/assets/vendor-qrcode.js", get(vendor_qrcode_js))
+        .route("/assets/vendor-jsqr.js", get(vendor_jsqr_js))
         .route("/api/agents", get(list_agents))
         .route("/api/chat/{agent}", post(chat))
         .route("/api/history", get(history))
@@ -84,6 +90,8 @@ fn build_app(state: Arc<WebState>) -> Router {
         .route("/api/gateways/{target}/remove", post(gateways_remove))
         .route("/api/gateways/{target}/bind", post(gateways_bind))
         .route("/api/remote-agents", get(remote_agents))
+        // 出码端（第七刀）：本机网关地址——分享二维码 agent://<host>[/<agent>] 的网关段
+        .route("/api/local-gateway", get(local_gateway))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             trust_middleware,
@@ -126,6 +134,27 @@ async fn style_css() -> Response {
 
 async fn app_js() -> Response {
     ([("cache-control", "no-cache"), ("content-type", "application/javascript; charset=utf-8")], APP_JS).into_response()
+}
+
+async fn vendor_qrcode_js() -> Response {
+    ([("cache-control", "no-cache"), ("content-type", "application/javascript; charset=utf-8")], VENDOR_QRCODE_JS).into_response()
+}
+
+async fn vendor_jsqr_js() -> Response {
+    ([("cache-control", "no-cache"), ("content-type", "application/javascript; charset=utf-8")], VENDOR_JSQR_JS).into_response()
+}
+
+/// 本机网关地址（出码端）：分享二维码内容 `agent://<host>[/<agent>]` 的
+/// 网关段。网关未配置（没装 aginx / config 缺 [relay]）→ null，前端藏分享钮。
+async fn local_gateway() -> Response {
+    match crate::agent_client::AgentEndpoint::from_gateway_config() {
+        Some(ep) => Json(serde_json::json!({
+            "target": ep.target,
+            "url": format!("agent://{}", ep.host),
+        }))
+        .into_response(),
+        None => Json(serde_json::json!({"target": null, "url": null})).into_response(),
+    }
 }
 
 async fn list_agents(State(st): State<Arc<WebState>>) -> Response {
