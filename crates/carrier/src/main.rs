@@ -4,6 +4,8 @@
 //! 定位与总纲见 aginx 生态 docs/AGINX-CARRIER-VISION.md。
 
 mod acp;
+mod notify;
+mod probe;
 mod start;
 mod web;
 
@@ -42,6 +44,19 @@ enum Command {
     },
     /// 显示版本与本地数据目录等信息
     Info,
+    /// 网关存活探测：TLS 连 relay 握 connected（watchdog 探测原语）
+    Probe {
+        /// 目标网关 agent:// URL（如 agent://selvkwjv.relay.aginx.net）
+        url: String,
+    },
+    /// iLink 一次性告警发送（daemon 无关，watchdog 通知原语）
+    Notify {
+        /// 告警正文
+        text: String,
+        /// 收件人 user_id（缺省 = 唯一未过期 bot 会话的绑定用户）
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// 用户侧票据仓库（借用机制的会话真源在用户侧）
     Ticket {
         #[command(subcommand)]
@@ -98,6 +113,8 @@ fn main() -> anyhow::Result<()> {
         Command::Start => start::run()?,
         Command::Web { listen } => web::run(listen)?,
         Command::Acp { clone, session } => acp::run(clone, session)?,
+        Command::Probe { url } => probe::run(url)?,
+        Command::Notify { text, to } => notify::run(text, to)?,
         Command::Info => {
             let data_dir = dirs::home_dir()
                 .map(|h| h.join(".aginx").join("carrier"))

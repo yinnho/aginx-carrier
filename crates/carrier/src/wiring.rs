@@ -100,22 +100,7 @@ pub async fn boot_channels(kernel: &Arc<CarrierKernel>) -> anyhow::Result<Channe
             Arc::new(move || match store2.load_all() {
                 Ok(rows) => rows
                     .into_iter()
-                    .map(|r| {
-                        let ctx: std::collections::HashMap<String, String> =
-                            serde_json::from_str(&r.context_tokens).unwrap_or_default();
-                        carrier_ilink::models::BotTokenFile {
-                            channel: r.channel,
-                            sender_key: r.sender_key,
-                            bot_id: r.bot_id,
-                            bot_token: r.bot_token,
-                            baseurl: r.baseurl,
-                            ilink_bot_id: r.ilink_bot_id,
-                            user_id: r.user_id,
-                            expires_at: r.expires_at,
-                            bind_agent: r.bind_agent,
-                            context_tokens: ctx,
-                        }
-                    })
+                    .map(weixin_row_to_token_file)
                     .collect::<Vec<_>>(),
                 Err(e) => {
                     tracing::warn!("Failed to load weixin sessions from DB: {e}");
@@ -212,6 +197,27 @@ pub async fn seed_system_creator(kernel: &Arc<CarrierKernel>) {
         Err(e) => {
             tracing::warn!(error = %e, "clone-creator 种子失败（不影响启动，重启重试）");
         }
+    }
+}
+
+/// WeixinSessionRow（DB 行）→ BotTokenFile（通道会话形状）。
+/// DB 加载回调与 `aginx-carrier notify` 一次性进程共用——两份手抄必漂移。
+pub fn weixin_row_to_token_file(
+    r: carrier_memory::weixin_store::WeixinSessionRow,
+) -> carrier_ilink::models::BotTokenFile {
+    let ctx: std::collections::HashMap<String, String> =
+        serde_json::from_str(&r.context_tokens).unwrap_or_default();
+    carrier_ilink::models::BotTokenFile {
+        channel: r.channel,
+        sender_key: r.sender_key,
+        bot_id: r.bot_id,
+        bot_token: r.bot_token,
+        baseurl: r.baseurl,
+        ilink_bot_id: r.ilink_bot_id,
+        user_id: r.user_id,
+        expires_at: r.expires_at,
+        bind_agent: r.bind_agent,
+        context_tokens: ctx,
     }
 }
 

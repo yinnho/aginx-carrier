@@ -104,6 +104,24 @@ impl BotSession {
 // Global state manager
 // ---------------------------------------------------------------------------
 
+/// 扫 `senders/*/session.json` 里的 weixin 会话（JSON 旁路——DB 不可用/
+/// 为空时的兜底）。`load_from_dir` 与 `aginx-carrier notify` 一次性进程
+/// 共用；别处复制这份过滤逻辑会漂移。
+pub fn scan_json_token_files() -> Vec<BotTokenFile> {
+    let home = carrier_types::config::home_dir();
+    let mut tfs = Vec::new();
+    for (sender_id, json) in carrier_types::config::scan_sender_sessions(&home) {
+        if json.get("channel").and_then(|v| v.as_str()) != Some("weixin") {
+            continue;
+        }
+        match serde_json::from_value::<BotTokenFile>(json) {
+            Ok(tf) => tfs.push(tf),
+            Err(e) => warn!(sender_id = %sender_id, "Failed to parse weixin session: {e}"),
+        }
+    }
+    tfs
+}
+
 /// Global state manager for all iLink bots.
 pub struct WeixinState {
     /// Per-bot state keyed by user_id (stable unique identifier for WeChat).
@@ -143,22 +161,7 @@ impl WeixinState {
             }
         }
         // Fallback: scan JSON files
-        let home = carrier_types::config::home_dir();
-
-        let mut tfs = Vec::new();
-        for (sender_id, json) in carrier_types::config::scan_sender_sessions(&home) {
-            if json.get("channel").and_then(|v| v.as_str()) != Some("weixin") {
-                continue;
-            }
-            let tf: BotTokenFile = match serde_json::from_value(json) {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!(sender_id = %sender_id, "Failed to parse weixin session: {e}");
-                    continue;
-                }
-            };
-            tfs.push(tf);
-        }
+        let tfs = scan_json_token_files();
         if !tfs.is_empty() {
             self.load_from_bot_token_files(tfs);
         }
