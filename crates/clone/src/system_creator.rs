@@ -6,7 +6,10 @@
 //! `clone_install_files`）装上。此后所有分身都由它生成——不手工摆文件。
 //!
 //! 定义层拷贝自 opencarrier-clones/clone-creator（同格式规范），仅改
-//! template.json 品牌字段。上游进化时重新拷贝 + 调整这里的文件清单即可；
+//! template.json 品牌字段。**上游进化时重新拷贝 + 调整这里的文件清单即可；
+//! 但 2026-08-25 起 staging + [CLONE_INSTALL] 标记安装是 aginx-carrier
+//! 侧的分叉**（opencarrier 无 clone_marker handler，其上游仍教 clone_install
+//! 工具）——重新拷贝时必须保留 staging/标记教学，勿被上游旧流程覆盖。
 //! `system_creator_files_passes_install_format` 测试保证资产与安装期硬校验
 //! （[`crate::validate_install_format`]）不打架。
 
