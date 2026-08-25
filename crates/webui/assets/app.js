@@ -335,6 +335,8 @@ async function sendMessage() {
   const agent = state.current;
   const isTool = agent.kind === 'gateway';
   const key = isTool ? agent.id : agent.name; // 网关工具按 id 路由，分身按 name
+  // 轮前快照：轮末 diff 出这轮新装的分身（制作分身闭环）
+  const knownAgentNames = new Set(state.agents.map((a) => a.name));
 
   pushHist(key, { role: 'user', text });
   appendBubble('user', text);
@@ -417,6 +419,16 @@ async function sendMessage() {
   $('send-btn').disabled = false;
   $('msg-input').focus();
   renderContacts();
+  // 制作分身闭环（补第七刀）：轮末重拉 /api/agents——clone-creator 用 clone_install
+  // 装好的新分身（spawn_agent 进程内即时注册，无 DupHub 往返）直接出现在侧栏，免手动 ⟳；
+  // 聊 clone-creator 时自动跳进新分身会话（对齐市场安装 installClone 的体验）。
+  await loadAgents();
+  if (!isTool && key === 'clone-creator') {
+    const fresh = state.agents
+      .filter((a) => !knownAgentNames.has(a.name))
+      .sort((x, y) => (y.last_active || '').localeCompare(x.last_active || ''))[0];
+    if (fresh) await selectAgent(fresh);
+  }
 }
 
 // ---------- 设置（大脑） ----------
