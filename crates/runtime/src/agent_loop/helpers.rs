@@ -25,18 +25,15 @@ pub const MAX_RETRIES: u32 = 3;
 /// Base delay for exponential backoff (milliseconds).
 pub const BASE_RETRY_DELAY_MS: u64 = 1000;
 
-/// Timeout for a single LLM API call (seconds).
-/// Catches mid-stream hangs where the server goes silent after connection.
-/// Must match `LLM_HTTP_TIMEOUT_SECS` in llm_driver_impl.rs.
-pub(in crate::agent_loop) const PER_LLM_CALL_TIMEOUT_SECS: u64 =
-    crate::llm_driver_impl::LLM_HTTP_TIMEOUT_SECS;
-
 /// Wall-clock timeout for streaming LLM calls (seconds).
 /// Even though the driver has a per-chunk idle timeout (120s), keepalive bytes
 /// or very slow responses can defeat it. This provides a hard upper bound.
-/// Higher than PER_LLM_CALL_TIMEOUT_SECS to allow long generations that are
-/// actively streaming (max_tokens=8192 typically completes in 60-90s).
-pub(in crate::agent_loop) const STREAM_WALL_CLOCK_TIMEOUT_SECS: u64 = 300;
+/// A healthy stream producing tokens has no budget problem (the driver's
+/// layered idle timeouts are the real stall detection); the old min(180, …)
+/// total cap killed legitimate long generations mid-stream — clone-creation
+/// turns writing whole definition files routinely stream 200-400s. 1800s is a zombie backstop only; the outer daemon backstop + turn progress
+/// detection bound the rest.
+pub(in crate::agent_loop) const STREAM_WALL_CLOCK_TIMEOUT_SECS: u64 = 1800;
 
 /// Max tokens for turn summary generation.
 pub(in crate::agent_loop) const SUMMARY_MAX_TOKENS: u32 = 150;
@@ -287,12 +284,12 @@ pub(in crate::agent_loop) async fn call_with_retry(
     let mut last_error = None;
 
     for attempt in 0..=MAX_RETRIES {
-        // Per-call stall timeout: catches a single hung HTTP/LLM call (network
-        // stall, model stuck). This is NOT a turn-level budget - the turn itself
-        // has no wall-clock governor (only stuck/progress detection + an outer
-        // daemon backstop). Fixed at PER_LLM_CALL_TIMEOUT_SECS, further capped by
-        // STREAM_WALL_CLOCK_TIMEOUT_SECS below.
-        let per_call_timeout = std::time::Duration::from_secs(PER_LLM_CALL_TIMEOUT_SECS);
+        // Per-call stall timeout semantics: the loop always streams, so the
+        // governing detection is the driver's layered idles (first-token 20s,
+        // inter-chunk content-idle 120s). The outer timeout below is only a
+        // zombie-stream backstop, deliberately NOT a 180s total cap (that
+        // killed healthy long generations mid-stream — see
+        // STREAM_WALL_CLOCK_TIMEOUT_SECS).
 
         // The agent loop always streams internally. `stream_tx` only controls
         // whether incremental events are ALSO forwarded to a consumer (e.g. the
@@ -352,13 +349,11 @@ pub(in crate::agent_loop) async fn call_with_retry(
         };
 
         // The loop always streams now (see call above), so always use the
-        // streaming wall-clock cap: long generations are allowed as long as the
-        // stream keeps producing tokens, but a total upper bound still prevents
-        // indefinite hangs (keepalive bytes can defeat the per-chunk idle).
-        let timeout = std::cmp::min(
-            per_call_timeout,
-            std::time::Duration::from_secs(STREAM_WALL_CLOCK_TIMEOUT_SECS),
-        );
+        // streaming wall-clock backstop: long generations are allowed as long
+        // as the stream keeps producing tokens (idle timeouts in the driver
+        // catch real stalls); this bound only prevents indefinite hangs from
+        // zombie streams that keep emitting *some* token forever.
+        let timeout = std::time::Duration::from_secs(STREAM_WALL_CLOCK_TIMEOUT_SECS);
         let result = match tokio::time::timeout(timeout, call).await {
             Ok(r) => r,
             Err(_) => {

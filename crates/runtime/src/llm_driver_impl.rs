@@ -19,15 +19,28 @@ use zeroize::Zeroizing;
 // OpenAI driver struct
 // ---------------------------------------------------------------------------
 
-/// Total HTTP timeout for a single LLM request (seconds).
-/// Must be ≤ the agent loop's `PER_LLM_CALL_TIMEOUT_SECS` so the HTTP layer
-/// acts as a hard backstop even if the outer `tokio::time::timeout` somehow
-/// doesn't fire (observed when the server accepts the connection then stalls).
+/// Total HTTP timeout for a NON-streaming LLM request (seconds). Streaming
+/// requests override this per-request with `LLM_STREAM_TOTAL_TIMEOUT_SECS`
+/// (see send_openai_with_retry) — a total cap there killed healthy long
+/// generations mid-stream. Acts as a hard backstop even if the outer
+/// `tokio::time::timeout` somehow doesn't fire (observed when the server
+/// accepts the connection then stalls).
 pub(crate) const LLM_HTTP_TIMEOUT_SECS: u64 = 180;
 
 /// Timeout for reading a response body after headers are received (seconds).
 /// Prevents hangs when the server sends headers slowly but then stalls on body.
 const LLM_BODY_READ_TIMEOUT_SECS: u64 = 120;
+
+/// Total-request timeout for STREAMING requests (seconds). Overrides the
+/// client-level `LLM_HTTP_TIMEOUT_SECS` per request: a healthy SSE stream that
+/// keeps producing tokens has no total budget problem, and the layered idle
+/// timeouts (byte / content / first-token, below) are the real stall
+/// detection. The client-level 180s cap killed legitimate long generations
+/// mid-stream (clone-creation turns writing whole definition files exceed
+/// 180s of pure output) — retries regenerated from scratch and the turn died.
+/// 1800s is only a zombie backstop; a genuine stream of max_tokens=8192
+/// finishes far below it.
+pub(crate) const LLM_STREAM_TOTAL_TIMEOUT_SECS: u64 = 1800;
 
 pub struct UnifiedHttpDriver {
     api_key: Zeroizing<String>,
@@ -691,7 +704,17 @@ impl UnifiedHttpDriver {
                 .post(&url)
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", self.api_key.as_str()))
-                .json(&*oai_request);
+                .json(&*oai_request)
+                // Streaming: lift the client-level 180s total timeout. The
+                // stream's own idle/first-token timeouts below are the stall
+                // detection; a total cap only kills healthy long generations
+                // (see LLM_STREAM_TOTAL_TIMEOUT_SECS). Non-streaming requests
+                // (complete/image paths) keep the 180s client default.
+                .timeout(std::time::Duration::from_secs(if oai_request.stream {
+                    LLM_STREAM_TOTAL_TIMEOUT_SECS
+                } else {
+                    LLM_HTTP_TIMEOUT_SECS
+                }));
 
             // Response-header timeout: defend against servers that accept the
             // connection but never return headers (stalled upstream). We use

@@ -290,8 +290,10 @@ pub trait KernelHandle: Send + Sync {
     ///
     /// Writes every file under `workspaces/<name>/`, builds `agent.toml` from the
     /// resulting workspace, and spawns the agent. Returns
-    /// `(agent_id, agent_name, display_name)`. Used by the `clone_install` tool
-    /// (clone-creator flow) so generation can land a new clone in one call.
+    /// `(agent_id, agent_name, display_name)`. Executed kernel-side by the
+    /// `[CLONE_INSTALL:<name>]` reply-marker handler (clone_marker.rs) — the
+    /// old `clone_install` agent tool was retired (giant-payload turns timed
+    /// out; staging + marker replaced it).
     ///
     /// Default: unavailable — real kernels override this to delegate to their
     /// existing `clone_install_files` inherent method.

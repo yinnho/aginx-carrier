@@ -18,6 +18,13 @@ pub fn is_internal_path(rel: &str) -> bool {
         || rel.starts_with("senders/")
         || rel.starts_with("workspaces/")
         || rel.starts_with("data/")
+        // staging/ holds in-progress clone definition layers (clone-creator
+        // writes each file incrementally; a [CLONE_INSTALL:<name>] marker in
+        // the reply lets the kernel move staging/<name>/ into a real workspace
+        // at turn end). Must land INSIDE the workspace, not the sender-scoped
+        // output dir, so it survives across channels/sessions and the kernel
+        // marker handler can resolve it from the manifest workspace alone.
+        || rel.starts_with("staging/")
 }
 
 /// Resolve a user-supplied path within a workspace sandbox.

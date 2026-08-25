@@ -1403,7 +1403,20 @@ impl CarrierKernel {
         };
 
         match result {
-            Ok(result) => {
+            Ok(mut result) => {
+                // [CLONE_INSTALL:<name>] markers: kernel-side clone install at
+                // turn end (clone-creator stages files incrementally under its
+                // own staging/; the marker hands the move to the kernel).
+                // Channel-agnostic — every non-streaming turn lands here.
+                if let Some(entry) = self.registry.get(agent_id) {
+                    self.process_clone_install_markers(
+                        &entry.name,
+                        entry.manifest.workspace.as_deref(),
+                        &mut result.response,
+                    )
+                    .await;
+                }
+
                 // Record token usage for quota tracking
                 self.runtime
                     .scheduler
@@ -1675,6 +1688,18 @@ impl CarrierKernel {
                 Ok(mut result) => {
                     // Clean up running_tasks entry
                     kernel_clone.runtime.running_tasks.remove(&agent_id);
+
+                    // [CLONE_INSTALL:<name>] markers: kernel-side clone install
+                    // at turn end (staging/<name>/ → real workspace → spawn).
+                    // Runs before anything reads result.response downstream
+                    // (webui SSE / evolution / mirrors all see the receipt).
+                    kernel_clone
+                        .process_clone_install_markers(
+                            &manifest.name,
+                            manifest.workspace.as_deref(),
+                            &mut result.response,
+                        )
+                        .await;
 
                     // task_plan in streaming path: log warning, plan not auto-executed
                     // (streaming clients expect real-time output; plan execution is for

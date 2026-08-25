@@ -1,8 +1,8 @@
 ---
 name: clone-generate
-description: 创建新的 AI 分身--收集需求、生成身份/知识/流程文件、clone_install 安装、clone_publish 推送 DupHub
-tools: ["clone_evaluate", "file_write", "shell_exec", "clone_install", "clone_publish", "clone_export"]
-version: 1
+description: 创建新的 AI 分身--收集需求、staging 逐文件生成定义层、[CLONE_INSTALL] 标记安装上线、clone_publish 推送 DupHub
+tools: ["clone_evaluate", "file_write", "file_read", "file_list", "shell_exec", "clone_publish", "clone_export"]
+version: 2
 ---
 # 分身生成流程
 
@@ -26,13 +26,20 @@ version: 1
 - **API 工具依赖**：是否需要调用外部 REST API（如地图、天气、股票数据）。如果有，生成 api_tools.toml 配置文件
 - **进化策略**：保守/积极/关闭（默认保守，公众型分身默认积极，人格型分身强制保守）
 
-### 2. 文件生成
+### 2. 文件生成（staging 逐文件写入）
 
-#### 角色型分身（默认流程）
+信息收集完毕后，**逐个文件**用 `file_write` 写入 `staging/<clone-name>/`（相对路径，落在你自己的 workspace 里）。一次 `file_write` 只写一个文件——写一个落一个盘，制作中断也不丢。
 
-信息收集完毕后，使用 `clone_install` 工具一次性安装。需要准备以下文件内容：
+**写入顺序**：先 template.json（对齐 name/display_name/default_flow），再身份层（SOUL.md / system_prompt.md / profile.md），再知识层，再流程层，最后 MEMORY.md / EVOLUTION.md。
 
-信息收集完毕后，使用 `clone_install` 工具一次性安装。需要准备以下文件内容：
+**续作规则（每次生成开工必做）**：
+
+1. 先 `file_list("staging/<clone-name>/")` 看半成品清单
+2. 如果已有半成品（上次中断/超时/被压缩），`file_read` 只读 template.json 和 SOUL.md 对齐名称与人格锚点，**不要全量重读**
+3. 只写缺失或需要修改的文件，绝不从零重做
+4. 全新生成时（staging 为空）不读直接写
+
+需要准备的文件清单：
 
 - **SOUL.md**（必需）：人格定义
 - **system_prompt.md**（必需）：行为指令
@@ -279,57 +286,55 @@ feedback_to_hub: false
 - 销售分身：`conservative`，提取话术和异议处理
 - 研究/创意分身：`aggressive`，广泛提取相关知识
 
-### 3. 安装
+### 3. 安装（发 [CLONE_INSTALL] 标记）
 
-使用 `clone_install` 工具一次性完成打包和安装：
+**没有 clone_install 工具——安装由系统在轮末接管。** 全部文件写进 `staging/<clone-name>/` 后，在**最终回复的正文**里发这个标记（一行，独立成段，原样照抄）：
+
+```
+[CLONE_INSTALL:<clone-name>]
+```
+
+标记必须是回复文本的一部分，不是任何工具的参数。系统在轮末自动完成：
+
+1. 读取 `staging/<clone-name>/` 全部文件
+2. 格式校验（缺 description、skills/ 根目录等硬闸门）
+3. 建 workspace、写文件、启动分身 agent
+4. 把标记替换成安装回执（成功 ✅ / 失败 ⚠️）
+
+**失败自修复**：回执会列出全部校验错误。staging 原样保留——按错误修复对应文件（file_write 覆盖即可），然后在回复里重发 `[CLONE_INSTALL:<clone-name>]`。绝不动 staging 里没问题的文件。
+
+**同名重装**：标记安装同名分身 = 重装（旧 agent 停掉、workspace 重写，`.dup/` 历史保留）。改版流程照常走 staging + 标记。
+
+template.json 关键字段（生成时参考，文件在 staging 里）：
 
 ```json
 {
+  "version": "2",
   "name": "<clone-name>",
-  "files": {
-    "SOUL.md": "<人格内容>",
-    "system_prompt.md": "<系统指令内容>",
-    "profile.md": "<基本信息>",
-    "EVOLUTION.md": "<进化策略>",
-    "template.json": "{\"version\":\"2\",\"name\":\"<clone-name>\",\"display_name\":\"<中文显示名>\",\"category\":\"<中文分类>\",\"description\":\"...\",\"author\":\"...\",\"tags\":[\"...\"],\"exported_at\":\"...\",\"knowledge_version\":3,\"default_flow\":\"<首个flow名>\"}",
-    "knowledge/faq.md": "<FAQ 知识内容>",
-    "flows/answer/flow.md": "<流程定义内容>"
-  }
+  "display_name": "<中文显示名>",
+  "category": "<中文分类>",
+  "description": "...",
+  "author": "...",
+  "tags": ["..."],
+  "exported_at": "...",
+  "knowledge_version": 3,
+  "default_flow": "<首个flow名>",
+  "mcp_servers": ["wechat-oa"],
+  "plugins": ["wecom"]
 }
 ```
 
-如果分身依赖插件或 MCP 服务器，`template.json` 中添加对应字段：
+`mcp_servers`/`plugins` 只在需要时加。
 
-```json
-{
-  "name": "<clone-name>",
-  "files": {
-    "template.json": "{\"version\":\"2\",\"name\":\"<clone-name>\",\"display_name\":\"<中文显示名>\",\"category\":\"<中文分类>\",\"description\":\"...\",\"author\":\"...\",\"tags\":[\"...\"],\"exported_at\":\"...\",\"knowledge_version\":3,\"default_flow\":\"<首个flow名>\",\"mcp_servers\":[\"wechat-oa\"],\"plugins\":[\"wecom\"]}",
-    "SOUL.md": "...",
-    "system_prompt.md": "...",
-    "flows/write-article/flow.md": "...",
-    "flows/write-article/references/format-guide.md": "...",
-    "...": "..."
-  }
-}
-```
+### 4. 安装后验证（下一轮）
 
-系统会自动完成：
-1. 创建工作区
-2. 写入所有定义层文件
-3. 启动分身 agent
-
-**不需要 `shell_exec`，不需要 `tar`，不需要 `curl`。**
-
-### 4. 安装后验证
-
-安装成功后，执行质量评估：
+回执确认安装成功后，**下一轮对话**（用户回复任意内容时）执行：
 
 使用 `clone_evaluate` 工具评估分身质量得分。
 
-### 5. 发布到 Hub
+### 5. 发布到 Hub（安装成功后）
 
-安装和验证完成后，使用 `clone_publish` 发布到 Hub：
+安装成功后，使用 `clone_publish` 发布到 Hub（此时分身已真���落盘，publish 读得到）：
 
 ```json
 {
@@ -377,8 +382,10 @@ feedback_to_hub: false
 
 ## 文件操作效率规则
 
-- **绝不先读后写**：用 file_write 写入文件时，不要先用 file_read 读取同目录下的已有文件。你已经知道分身的定位和风格，直接写
+- **绝不先读后写（全新生成时）**：staging 为空、从零生成时不要 file_read——你已经知道分身的定位和风格，直接写
+- **续作半成品时只读锚点**：staging 已有文件时，只 file_read template.json 和 SOUL.md 对齐名称与人格，其余文件看 file_list 清单补缺，不全量重读
 - **用户说"直接写"时**：立即调用 file_write，零次 file_read
 - **避免冗余 file_read**：确认文件存在用 file_list，不用 file_read
 - **一次只做一件事**：收到"写入2个参考文件"→ 只写入2个文件，不做其他操作
 - **不要反复确认**：写入后不需要再 file_read 验证内容
+- **绝不攒批**：不要把多个文件内容攒在一次回复/一个工具调用里——一次 file_write 一个文件，写完一个是一个

@@ -313,22 +313,6 @@ pub fn validate_clone_name(name: &str) -> CarrierResult<&str> {
     Ok(name)
 }
 
-/// Validate a file path key inside clone files map — no traversal, no absolute paths.
-pub fn validate_clone_file_path(path: &str) -> CarrierResult<&str> {
-    if path.is_empty() {
-        return Err(CarrierError::InvalidInput(
-            "File path cannot be empty".to_string(),
-        ));
-    }
-    if path.starts_with('/') || path.starts_with("..") {
-        return Err(CarrierError::InvalidInput(format!(
-            "Invalid file path '{}': must be relative and not escape the archive",
-            path
-        )));
-    }
-    validate_path(path)
-}
-
 /// Resolve a file path through the workspace sandbox (if available) or legacy validation.
 pub fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> CarrierResult<PathBuf> {
     if let Some(root) = workspace_root {

@@ -7,6 +7,7 @@ pub mod aginx_net;
 pub mod background;
 pub mod brain;
 pub mod capabilities;
+pub mod clone_marker;
 pub mod config;
 pub mod config_reload;
 pub mod cron;

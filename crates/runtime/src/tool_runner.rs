@@ -109,7 +109,7 @@ pub async fn execute_tool(
     // Flow `tools:` hard sandbox (flow_allowed_tools): when the matched flow
     // declares a non-empty tool set, only tools in that frozen allow-list may
     // run. This stops the agent wandering to out-of-flow catalog tools (e.g.
-    // clone-creator reaching train_write instead of the declared clone_install).
+    // clone-creator reaching train_write instead of the declared file_write).
     // Both sides are normalized to base names ("filesystem__x" → "x") so
     // toolset-prefixed names compare equal.
     if !tool_permitted_in_flow(tool_name, flow_allowed_tools) {

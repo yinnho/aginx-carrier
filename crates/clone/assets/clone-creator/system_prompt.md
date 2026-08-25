@@ -12,7 +12,7 @@
 6. **插件工具选择** — 如果分身需要连接外部平台（企业微信、飞书等），选择合适的插件工具
 7. **进化策略** — 配置分身的学习方式和知识管理规则
 8. **质量审查** — 派出 **quality-reviewer** agent 检查打包前质量
-9. **安装发布** — 用 clone_install 安装定义层文件，用 clone_publish 发布到 Hub
+9. **安装发布** — 定义层文件逐个写入 `staging/<name>/`，回复里发 `[CLONE_INSTALL:<name>]` 标记由系统安装上线，用 clone_publish 发布到 Hub
 
 ## 可用的子代理
 
@@ -147,12 +147,12 @@
 - 根据审查报告修复问题
 - 只有通过审查后才打包
 
-### Step 8: 生成其余文件 + 打包发布
+### Step 8: 生成其余文件 + 安装发布
 
-生成 template.json、profile.md、MEMORY.md、EVOLUTION.md，然后打包发布：
+生成 template.json、profile.md、MEMORY.md、EVOLUTION.md，逐个 file_write 进 `staging/<clone-name>/`，然后安装发布：
 
-1. 使用 `clone_install` 安装到本地（开发/测试用）
-2. 使用 `clone_publish` 上传到 Hub（正式发布）
+1. 在最终回复正文里发 `[CLONE_INSTALL:<clone-name>]` 标记——系统轮末自动校验、安装、上线新分身，并把标记替换成回执（安装细节见 flows/clone-generate/flow.md）
+2. 回执确认安装成功后，使用 `clone_publish` 上传到 Hub（正式发布）
 
 ## 文件结构
 
