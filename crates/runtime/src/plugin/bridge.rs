@@ -774,6 +774,20 @@ impl PluginBridgeManager {
         .await;
 
         if out.suppress_text_send {
+            // 静默哨兵（agent 判定无需回复）在微信交互通道不落地为死寂——
+            // 回一个轻量 👌，让用户知道消息到了、人还在。仅 agent 主动说
+            //「无需回复」这一种（空回复/[DELIVER]-only 轮仍真静默：卡片已
+            // 送达，补话反而吵）。机器通道（webhook）不受影响——空响应即
+            // 机器友好的 200。
+            if sanitize_wechat && is_no_reply_sentinel(&out.cleaned_text) {
+                info!(
+                    channel = %original.channel_type,
+                    bot = %original.bot_id,
+                    sender = %original.sender_id,
+                    "Bridge sending sentinel ack"
+                );
+                self.send_text(original, "👌").await;
+            }
             return;
         }
 
@@ -786,12 +800,17 @@ impl PluginBridgeManager {
             text_preview = %response.chars().take(50).collect::<String>(),
             "Bridge sending response"
         );
+        self.send_text(original, response).await;
+    }
+
+    /// Fire-and-forget text delivery on the originating channel.
+    async fn send_text(&self, original: &PluginMessage, text: &str) {
         if let Some(ref send_fn) = self.channel_send_fn {
             let send_fn = send_fn.clone();
             let channel_type = original.channel_type.clone();
             let bot_id = original.bot_id.clone();
             let sender_id = original.sender_id.clone();
-            let text = response.to_string();
+            let text = text.to_string();
             let _ = tokio::task::spawn_blocking(move || {
                 if let Err(e) = send_fn(&channel_type, &bot_id, &sender_id, &text) {
                     error!(
