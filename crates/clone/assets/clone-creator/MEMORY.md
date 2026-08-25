@@ -2,7 +2,6 @@
 
 ## 知识
 
-- [agx-format](knowledge/agx-format.md)
 - [公众分身蒸馏规范](knowledge/celebrity-distillation.md)
 - [clone-best-practices](knowledge/clone-best-practices.md)
 - [心智模型提炼方法论](knowledge/extraction-framework.md)

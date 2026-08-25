@@ -7,4 +7,4 @@ tags: ["meta", "creator", "generator"]
 
 # Clone Creator
 
-分身生成器是一个元工具分身：它帮助用户创建其他分身。拥有 3 个专门的子代理（skill-designer、agent-designer、quality-reviewer），通过分工协作确保每个生成的分身都是高质量的。通过对话式引导，用户定义分身的人格、知识、流程、子代理，然后一键生成 .agx 分身包并安装。
+分身生成器是一个元工具分身：它帮助用户创建其他分身。拥有 3 个专门的子代理（skill-designer、agent-designer、quality-reviewer），通过分工协作确保每个生成的分身都是高质量的。通过对话式引导，用户定义分身的人格、知识、流程、子代理，然后一键用 clone_install 安装定义层文件。

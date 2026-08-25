@@ -42,10 +42,6 @@ pub fn system_creator_files() -> std::collections::BTreeMap<String, Vec<u8>> {
             include_str!("../assets/clone-creator/EVOLUTION.md"),
         ),
         (
-            "knowledge/agx-format.md",
-            include_str!("../assets/clone-creator/knowledge/agx-format.md"),
-        ),
-        (
             "knowledge/celebrity-distillation.md",
             include_str!("../assets/clone-creator/knowledge/celebrity-distillation.md"),
         ),
@@ -114,7 +110,7 @@ mod tests {
     #[test]
     fn system_creator_files_passes_install_format() {
         let files = system_creator_files();
-        assert_eq!(files.len(), 20, "文件清单数量与拷贝时不一致，检查 assets/");
+        assert_eq!(files.len(), 19, "文件清单数量与拷贝时不一致，检查 assets/");
 
         let errors = crate::validate_install_format(&files).expect("validate panicked");
         assert!(

@@ -315,10 +315,9 @@ feedback_to_hub: false
 ```
 
 系统会自动完成：
-1. 打包为 .agx 格式
-2. 创建工作区
-3. 安装所有文件
-4. 启动分身 agent
+1. 创建工作区
+2. 写入所有定义层文件
+3. 启动分身 agent
 
 **不需要 `shell_exec`，不需要 `tar`，不需要 `curl`。**
 
@@ -339,7 +338,7 @@ feedback_to_hub: false
 ```
 
 系统会自动：
-1. 导出分身为 .agx 归档
+1. 打包分身定义层文件（文件级，非归档）
 2. 使用配置的 Hub API Key 上传到 Hub
 3. 返回 Hub 上的模板 ID
 
@@ -355,7 +354,7 @@ feedback_to_hub: false
 }
 ```
 
-返回 .agx 归档信息。
+返回定义层清单（文件路径、总大小、state hash）。
 
 ## 生成规则
 
