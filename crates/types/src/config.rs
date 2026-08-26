@@ -694,6 +694,15 @@ pub struct KernelConfig {
     /// webhook HTTP 入站通道（机器→agent 事件触达）。
     #[serde(default)]
     pub webhook: WebhookConfig,
+    /// 未绑定入站消息的兜底落点（系统身份「我」）。None/空 = 维持
+    /// 第十二刀立法（无路由即丢弃）。兜底不写回 SenderRouter——扫码
+    /// 绑定才固化路由，这里只是"别让陌生人石沉大海"。
+    #[serde(default = "default_inbound_fallback_agent")]
+    pub inbound_fallback_agent: Option<String>,
+}
+
+fn default_inbound_fallback_agent() -> Option<String> {
+    Some("me".to_string())
 }
 
 /// webhook HTTP 入站通道（config.toml `[webhook]` 段）——分身被外部事件
@@ -1028,6 +1037,7 @@ impl Default for KernelConfig {
             trusted_signing_keys: Vec::new(),
             session_event_source: false,
             borrow: BorrowPolicyConfig::default(),
+            inbound_fallback_agent: default_inbound_fallback_agent(),
             webhook: WebhookConfig::default(),
         }
     }

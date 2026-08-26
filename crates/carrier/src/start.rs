@@ -27,6 +27,8 @@ async fn async_main() -> anyhow::Result<()> {
     // ── 系统分身：clone-creator（克隆大师）未注册则用内嵌定义层装上。
     // 分身只经它生成，不手工摆文件。──
     aginx_carrier::wiring::seed_system_creator(&kernel).await;
+    // ── 系统身份：「我」——主人的统一身份（总管/门面），开箱即聊。──
+    aginx_carrier::wiring::seed_system_me(&kernel).await;
 
     // ── aginx 入网同步：workspace 里已装但 ~/.aginx/agents/ 缺登记的分身
     // 补写 aginx.toml（clone_install 是增量钩子，这里是启动对账）。──

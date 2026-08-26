@@ -842,6 +842,13 @@ impl KernelHandle for CarrierKernel {
         }
         Some((url, key))
     }
+
+    fn inbound_fallback_agent(&self) -> Option<String> {
+        self.config
+            .inbound_fallback_agent
+            .clone()
+            .filter(|s| !s.is_empty())
+    }
 }
 
 type ToolsetAlias = (fn(&str) -> bool, &'static str);

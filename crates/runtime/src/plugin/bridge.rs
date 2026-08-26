@@ -218,17 +218,42 @@ impl PluginBridgeManager {
         }
 
         // 1. Resolve route via route_key（绑定即路由：一个 sender 一个分身）。
-        // 未绑定（无路由）的消息直接丢弃并告警——不静默指派、不命名。
+        // 未绑定（无路由）的消息：若配置了兜底身份（默认「我」）且已注册，
+        // 路由到它——兜底不写回 SenderRouter（扫码绑定才固化）；否则丢弃。
         let agent_id = self.resolve_agent(&msg);
-        if agent_id.is_empty() {
-            warn!(
-                channel = %msg.channel_type,
-                bot = %msg.bot_id,
-                route_key = %rk,
-                "No agent resolved, dropping message"
-            );
-            return;
-        }
+        let agent_id = if agent_id.is_empty() {
+            match self
+                .kernel
+                .inbound_fallback_agent()
+                .and_then(|name| {
+                    self.kernel
+                        .list_agents()
+                        .into_iter()
+                        .find(|a| a.name == name)
+                        .map(|a| a.id)
+                }) {
+                Some(id) => {
+                    info!(
+                        channel = %msg.channel_type,
+                        bot = %msg.bot_id,
+                        route_key = %rk,
+                        "Unbound inbound routed to fallback identity"
+                    );
+                    id
+                }
+                None => {
+                    warn!(
+                        channel = %msg.channel_type,
+                        bot = %msg.bot_id,
+                        route_key = %rk,
+                        "No agent resolved, dropping message"
+                    );
+                    return;
+                }
+            }
+        } else {
+            agent_id
+        };
 
         info!(
             channel = %msg.channel_type,

@@ -213,6 +213,29 @@ pub async fn seed_system_creator(kernel: &Arc<CarrierKernel>) {
     }
 }
 
+/// 系统身份种子：未注册「我」时用内嵌定义层装上（同 seed_system_creator 模式）。
+pub async fn seed_system_me(kernel: &Arc<CarrierKernel>) {
+    if kernel
+        .registry
+        .find_by_name(carrier_clone::system_creator::SYSTEM_ME_NAME)
+        .is_some()
+    {
+        return;
+    }
+    let files = carrier_clone::system_creator::system_me_files();
+    match kernel
+        .clone_install_files(carrier_clone::system_creator::SYSTEM_ME_NAME, files)
+        .await
+    {
+        Ok((id, name, display_name)) => {
+            tracing::info!(id = %id, name = %name, display_name = %display_name, "系统分身已种子：me");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "me 种子失败（不影响启动，重启重试）");
+        }
+    }
+}
+
 /// WeixinSessionRow（DB 行）→ BotTokenFile（通道会话形状）。
 /// DB 加载回调与 `aginx-carrier notify` 一次性进程共用——两份手抄必漂移。
 pub fn weixin_row_to_token_file(

@@ -16,6 +16,37 @@
 /// 系统分身名（registry / workspace 目录名）。
 pub const SYSTEM_CREATOR_NAME: &str = "clone-creator";
 
+/// 系统身份「我」的种子（第二系统分身，2026-08-26）。
+///
+/// 与 clone-creator 同款 boot 种子机制；定位见 assets/me/SOUL.md——
+/// 主人的统一身份（对内总管/对外门面）。它的超能力全部来自定义层 +
+/// runtime 的 gateway_hub 工具（contacts_list/contact_prompt，经
+/// flows/hub 声明注入），内核零特判。
+pub const SYSTEM_ME_NAME: &str = "me";
+
+/// 「我」的内嵌定义层文件清单。
+pub fn system_me_files() -> std::collections::BTreeMap<String, Vec<u8>> {
+    const FILES: &[(&str, &str)] = &[
+        ("template.json", include_str!("../assets/me/template.json")),
+        ("SOUL.md", include_str!("../assets/me/SOUL.md")),
+        (
+            "system_prompt.md",
+            include_str!("../assets/me/system_prompt.md"),
+        ),
+        ("profile.md", include_str!("../assets/me/profile.md")),
+        ("MEMORY.md", include_str!("../assets/me/MEMORY.md")),
+        ("EVOLUTION.md", include_str!("../assets/me/EVOLUTION.md")),
+        (
+            "flows/hub/flow.md",
+            include_str!("../assets/me/flows/hub/flow.md"),
+        ),
+    ];
+    FILES
+        .iter()
+        .map(|(p, c)| (p.to_string(), c.as_bytes().to_vec()))
+        .collect()
+}
+
 /// 内嵌定义层文件清单（path → 内容）。顺序无关，装入 BTreeMap 后交给
 /// `clone_install_files`。
 pub fn system_creator_files() -> std::collections::BTreeMap<String, Vec<u8>> {
@@ -131,5 +162,26 @@ mod tests {
 
         // default_flow 指向的 flow 必须真的在（否则装完 default_flow 兜底空转）。
         assert!(files.contains_key("flows/clone-generate/flow.md"));
+    }
+
+    /// 「我」种子资产漂移闸门（同上，独立清单独立断言）。
+    #[test]
+    fn system_me_files_passes_install_format() {
+        let files = system_me_files();
+        assert_eq!(files.len(), 7, "「我」文件清单数量与拷贝时不一致，检查 assets/me/");
+
+        let errors = crate::validate_install_format(&files).expect("validate panicked");
+        assert!(
+            errors.is_empty(),
+            "内嵌「我」定义层未过安装校验：\n- {}",
+            errors.join("\n- ")
+        );
+
+        let tpl = crate::parse_template_manifest_lenient(
+            std::str::from_utf8(&files["template.json"]).unwrap(),
+        )
+        .expect("template.json unparseable");
+        assert_eq!(tpl.name, SYSTEM_ME_NAME);
+        assert!(files.contains_key("flows/hub/flow.md"));
     }
 }

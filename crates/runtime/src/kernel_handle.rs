@@ -314,4 +314,10 @@ pub trait KernelHandle: Send + Sync {
     fn clone_hub_config(&self) -> Option<(String, String)> {
         None
     }
+
+    /// Unbound-inbound fallback target (system identity「me」). None/empty =
+    /// keep the bind-only routing law (drop unbound messages).
+    fn inbound_fallback_agent(&self) -> Option<String> {
+        None
+    }
 }

@@ -25,6 +25,7 @@ async fn async_main(listen: String) -> anyhow::Result<()> {
 
     let kernel = aginx_carrier::wiring::boot_kernel()?;
     aginx_carrier::wiring::seed_system_creator(&kernel).await;
+    aginx_carrier::wiring::seed_system_me(&kernel).await;
     aginx_carrier::wiring::sync_aginx_registrations(&kernel);
     let _cm = aginx_carrier::wiring::boot_channels(&kernel).await?;
 
