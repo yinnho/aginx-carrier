@@ -14,7 +14,7 @@ use carrier_types::error::CarrierError;
 use carrier_types::plugin::{PluginContent, PluginMessage};
 
 use super::router::SenderRouter;
-use crate::kernel_handle::KernelHandle;
+use crate::kernel_handle::{AgentInfo, KernelHandle};
 // Re-export outbound types and marker APIs so existing
 // `runtime::plugin::bridge::…` imports keep compiling.
 pub use crate::outbound::{
@@ -222,16 +222,7 @@ impl PluginBridgeManager {
         // 路由到它——兜底不写回 SenderRouter（扫码绑定才固化）；否则丢弃。
         let agent_id = self.resolve_agent(&msg);
         let agent_id = if agent_id.is_empty() {
-            match self
-                .kernel
-                .inbound_fallback_agent()
-                .and_then(|name| {
-                    self.kernel
-                        .list_agents()
-                        .into_iter()
-                        .find(|a| a.name == name)
-                        .map(|a| a.id)
-                }) {
+            match self.resolve_fallback() {
                 Some(id) => {
                     info!(
                         channel = %msg.channel_type,
@@ -537,6 +528,16 @@ impl PluginBridgeManager {
         }
 
         String::new()
+    }
+
+    /// Fallback identity for unbound inbound messages (default「me」).
+    /// Returns None when the feature is off or the fallback identity is not
+    /// registered — the caller then keeps the drop behavior.
+    fn resolve_fallback(&self) -> Option<String> {
+        resolve_fallback_agent(
+            self.kernel.inbound_fallback_agent().as_deref(),
+            &self.kernel.list_agents(),
+        )
     }
 
     /// Resolve non-text content into a text description (non-image media, or
@@ -865,6 +866,59 @@ fn weixin_keyword_rule_hit(rule: &carrier_types::automation::AutomationRule, tex
         && rule.trigger_kind == carrier_types::automation::TriggerKind::Keyword
         && !rule.trigger_data.is_empty()
         && text.trim().contains(rule.trigger_data.trim())
+}
+
+/// Pure core of [`PluginBridgeManager::resolve_fallback`]: pick the fallback
+/// identity's id from the configured name and the registered agent list.
+/// None = feature off (no name) or identity missing — caller keeps dropping.
+fn resolve_fallback_agent(fallback_name: Option<&str>, agents: &[AgentInfo]) -> Option<String> {
+    fallback_name
+        .filter(|n| !n.is_empty())
+        .and_then(|name| agents.iter().find(|a| a.name == name).map(|a| a.id.clone()))
+}
+
+#[cfg(test)]
+mod inbound_fallback_tests {
+    use super::*;
+
+    fn agent(id: &str, name: &str) -> AgentInfo {
+        AgentInfo {
+            id: id.into(),
+            name: name.into(),
+            display_name: name.into(),
+            state: "running".into(),
+            modality: String::new(),
+            model: String::new(),
+            description: String::new(),
+            tags: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unbound_routes_to_me_when_registered() {
+        let agents = vec![agent("uuid-tiny", "tiny-pilot"), agent("uuid-me", "me")];
+        assert_eq!(
+            resolve_fallback_agent(Some("me"), &agents),
+            Some("uuid-me".to_string())
+        );
+    }
+
+    #[test]
+    fn disabled_switch_keeps_drop() {
+        let agents = vec![agent("uuid-me", "me")];
+        // Config off (None) and explicit empty string both disable the feature.
+        assert_eq!(resolve_fallback_agent(None, &agents), None);
+        assert_eq!(resolve_fallback_agent(Some(""), &agents), None);
+    }
+
+    #[test]
+    fn me_not_installed_keeps_drop() {
+        let agents = vec![agent("uuid-tiny", "tiny-pilot")];
+        assert_eq!(resolve_fallback_agent(Some("me"), &agents), None);
+        // Empty registry too.
+        assert_eq!(resolve_fallback_agent(Some("me"), &[]), None);
+    }
 }
 
 #[cfg(test)]
