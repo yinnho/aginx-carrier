@@ -280,7 +280,6 @@ impl CarrierKernel {
         entry: &AgentEntry,
     ) -> (String, Option<u32>) {
         let flow_name_owned = flow.name.clone();
-        let flow_body = flow.body.clone();
         let flow_max_iter = flow.max_iterations;
         let elevate = flow.elevates();
         let flow_warnings = self.inject_flow_tools(
@@ -290,7 +289,7 @@ impl CarrierKernel {
             elevate,
             entry.manifest.cli_exec.clone().unwrap_or_default(),
         );
-        let mut flow_prompt = format!("**{}**\n{}", flow_name_owned, flow_body);
+        let mut flow_prompt = format!("**{}**\n{}", flow_name_owned, flow.body.clone());
         if !flow_warnings.is_empty() {
             flow_prompt.push_str(&format!(
                 "\n\n⚠️ **Flow Tool Warnings:**\n{}",

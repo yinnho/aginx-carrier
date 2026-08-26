@@ -68,6 +68,11 @@ async function loadAgents() {
   } catch (e) {
     setConn(false);
   }
+  // 首启默认落在「我」——系统身份，开箱即聊
+  if (!state.current && state.agents.length) {
+    const me = state.agents.find(a => a.name === 'me');
+    if (me) selectAgent(me);
+  }
   renderContacts();
 }
 
@@ -81,7 +86,10 @@ function previewText(a) {
 function renderContacts() {
   contactList.innerHTML = '';
   const q = ($('search-input').value || '').trim().toLowerCase();
+  // 「我」（系统身份）永远置顶，其余按 Running + 最近活跃排
   const sorted = [...state.agents].sort((a, b) => {
+    if (a.name === 'me') return -1;
+    if (b.name === 'me') return 1;
     const ra = a.state === 'Running' ? 1 : 0;
     const rb = b.state === 'Running' ? 1 : 0;
     if (ra !== rb) return rb - ra;
@@ -90,12 +98,13 @@ function renderContacts() {
   for (const a of sorted) {
     const hay = `${a.display_name} ${a.name} ${a.description}`.toLowerCase();
     if (q && !hay.includes(q)) continue;
+    const isMe = a.name === 'me';
     const el = document.createElement('div');
     el.className = 'chat_item' + (state.current && state.current.id === a.id ? ' active' : '');
     el.innerHTML =
-      `<div class="avatar">${escapeHtml(a.emoji || (a.display_name || a.name).slice(0, 1))}` +
+      `<div class="avatar">${escapeHtml(a.emoji || (isMe ? '👤' : (a.display_name || a.name).slice(0, 1)))}` +
       `<span class="presence${a.state === 'Running' ? ' on' : ''}"></span></div>` +
-      `<div class="meta"><div class="name">${escapeHtml(a.display_name || a.name)}</div>` +
+      `<div class="meta"><div class="name">${escapeHtml(a.display_name || a.name)}${isMe ? ' <span style="font-size:11px;color:var(--muted,#888)">系统身份</span>' : ''}</div>` +
       `<div class="msg">${escapeHtml(previewText(a).slice(0, 40))}</div></div>`;
     el.onclick = () => selectAgent(a);
     contactList.appendChild(el);

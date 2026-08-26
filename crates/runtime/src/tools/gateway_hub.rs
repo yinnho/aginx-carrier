@@ -97,6 +97,20 @@ async fn handle_contacts_list(
         }));
     }
 
+    // Bare-id gateway agents (e.g. local CLI tools like claude) added from the
+    // webui: reachable via the same agent:// path, just on our own relay.
+    for id in store.added() {
+        if !id.starts_with('@') {
+            out.push(serde_json::json!({
+                "id": id,
+                "name": id,
+                "description": "网关 agent（本机 relay）",
+                "kind": "remote",
+                "gateway": "",
+            }));
+        }
+    }
+
     if out.is_empty() {
         return Ok("当前没有任何联系人（本地分身与远程联系人均为空）。".to_string());
     }
@@ -118,91 +132,132 @@ async fn handle_contact_prompt(
     match split_contact(contact).map_err(CarrierError::InvalidInput)? {
         ContactRef::Local(name) => {
             let kh = crate::tools::require_kernel(kernel)?;
-            // Depth guard mirrors agent_send — me delegating to a clone that
-            // delegates back must hit the wall instead of looping forever.
-            crate::tools::check_call_depth()?;
-            let current_depth = crate::tool_runner::AGENT_CALL_DEPTH
-                .try_with(|d| d.get())
-                .unwrap_or(0);
-            let reply = crate::tool_runner::AGENT_CALL_DEPTH
-                .scope(std::cell::Cell::new(current_depth + 1), async {
-                    kh.send_to_agent(&name, message, ctx.sender_id, None, ctx.caller_agent_id, ctx.owner_id, None)
-                        .await
-                })
-                .await?;
-            Ok(reply)
+            // Bare id: registry clone first; fall back to the gateway ledger
+            // (webui-added CLI tools like claude ride our own relay).
+            let is_local = kh.list_agents().iter().any(|a| a.name == name);
+            if is_local {
+                return prompt_local(kh, &name, message, ctx).await;
+            }
+            if shared_store(ctx.home_dir)?.is_added(&name) {
+                return prompt_remote(ctx, &name, None, message, input).await;
+            }
+            Err(CarrierError::AgentNotFound(format!(
+                "联系人 '{name}' 既不是本地分身也不在通讯录里"
+            )))
         }
         ContactRef::Remote { target, agent } => {
             let store = shared_store(ctx.home_dir)?;
             let url = store.gateway_url(&target).ok_or_else(|| {
                 CarrierError::InvalidInput(format!("远程网关 {target} 不在地址簿（先在 App 里扫码添加）"))
             })?;
-            let mut ep = AgentEndpoint::from_url_with_local_secret(&url).ok_or_else(|| {
-                CarrierError::InvalidInput(format!("网关地址无效: {url}"))
-            })?;
-            ep.auth_token = store.gateway_token(&target);
-
-            // Auto-resume: deterministic bookkeeping, not LLM-visible state.
-            // Explicit session_id param still wins (fresh-session opt-out is
-            // {"session_id": null}-shaped absence + explicit "" reset below).
-            let explicit = input.get("session_id").and_then(|v| v.as_str()).map(str::to_string);
-            let session_id = match explicit {
-                Some(v) if v.is_empty() => None,
-                Some(v) => Some(v),
-                None => {
-                    let agent_id = ctx.caller_agent_id.unwrap_or("");
-                    let owner = ctx.owner_id.unwrap_or("");
-                    match ctx.memory {
-                        Some(mem) => mem
-                            .kv_get(agent_id, owner, "", &format!("{SESSION_KEY_PREFIX}{contact}"))?
-                            .and_then(|v| v.as_str().map(str::to_string)),
-                        None => None,
-                    }
-                }
-            };
-
-            let mut conn = AgentConn::connect(&ep)
-                .await
-                .map_err(|e| CarrierError::Internal(format!("连接网关失败: {e}")))?;
-            let ok = conn
-                .initialize()
-                .await
-                .map_err(|e| CarrierError::Internal(format!("握手失败: {e}")))?;
-            if !ok {
-                return Err(CarrierError::CapabilityDenied(format!(
-                    "对方网关拒绝了本次访问（{contact} 未授权或凭证失效）——请在 App 里重新绑定或申请访问"
-                )));
-            }
-            let result = conn
-                .prompt(&agent, message, session_id.as_deref(), |_| true)
-                .await
-                .map_err(|e| CarrierError::Internal(format!("对方响应失败: {e}")))?;
-
-            // Persist harvested sessionId for next-turn continuation.
-            if let Some(sid) = &result.session_id {
-                if let Some(mem) = ctx.memory {
-                    let agent_id = ctx.caller_agent_id.unwrap_or("");
-                    let owner = ctx.owner_id.unwrap_or("");
-                    let _ = mem.kv_set(
-                        agent_id,
-                        owner,
-                        "",
-                        &format!("{SESSION_KEY_PREFIX}{contact}"),
-                        Value::String(sid.clone()),
-                    );
-                }
-            }
-
-            let mut out = serde_json::json!({ "response": result.text });
-            if let Some(sid) = &result.session_id {
-                out["session_id"] = Value::String(sid.clone());
-            }
-            if let Some(cost) = result.cost_usd {
-                out["cost_usd"] = serde_json::json!(cost);
-            }
-            Ok(out.to_string())
+            prompt_remote(ctx, &agent, Some((url.to_string(), target)), message, input).await
         }
     }
+}
+
+/// Local fork: inter-agent send with call-depth guard.
+async fn prompt_local(
+    kh: &Arc<dyn KernelHandle>,
+    name: &str,
+    message: &str,
+    ctx: &ToolContext<'_>,
+) -> CarrierResult<String> {
+    crate::tools::check_call_depth()?;
+    let current_depth = crate::tool_runner::AGENT_CALL_DEPTH.try_with(|d| d.get()).unwrap_or(0);
+    crate::tool_runner::AGENT_CALL_DEPTH
+        .scope(std::cell::Cell::new(current_depth + 1), async {
+            kh.send_to_agent(name, message, ctx.sender_id, None, ctx.caller_agent_id, ctx.owner_id, None)
+                .await
+        })
+        .await
+}
+
+/// Remote fork: agent:// prompt over the relay. `explicit_target` carries the
+/// address-book (url, target) for `@target~agent` ids; None = our own relay
+/// config (bare-id gateway agents).
+#[allow(clippy::too_many_arguments)]
+async fn prompt_remote(
+    ctx: &ToolContext<'_>,
+    agent: &str,
+    explicit_target: Option<(String, String)>,
+    message: &str,
+    input: &Value,
+) -> CarrierResult<String> {
+    let mut ep = match &explicit_target {
+        Some((url, _)) => AgentEndpoint::from_url_with_local_secret(url)
+            .ok_or_else(|| CarrierError::InvalidInput(format!("网关地址无效: {url}")))?,
+        None => AgentEndpoint::from_gateway_config().ok_or_else(|| {
+            CarrierError::Internal("本机网关未配置（~/.aginx/config.toml [relay] 段缺失）".to_string())
+        })?,
+    };
+    if let Some((_, target)) = &explicit_target {
+        ep.auth_token = shared_store(ctx.home_dir)?.gateway_token(target);
+    }
+
+    // Auto-resume: deterministic bookkeeping, not LLM-visible state.
+    let contact_label = explicit_target
+        .as_ref()
+        .map(|(_, t)| format!("@{}~{}", t, agent))
+        .unwrap_or_else(|| agent.to_string());
+    let explicit = input
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let session_id = match explicit {
+        Some(v) if v.is_empty() => None,
+        Some(v) => Some(v),
+        None => {
+            let agent_id = ctx.caller_agent_id.unwrap_or("");
+            let owner = ctx.owner_id.unwrap_or("");
+            match ctx.memory {
+                Some(mem) => mem
+                    .kv_get(agent_id, owner, "", &format!("{SESSION_KEY_PREFIX}{contact_label}"))?
+                    .and_then(|v| v.as_str().map(str::to_string)),
+                None => None,
+            }
+        }
+    };
+
+    let mut conn = AgentConn::connect(&ep)
+        .await
+        .map_err(|e| CarrierError::Internal(format!("连接网关失败: {e}")))?;
+    let ok = conn
+        .initialize()
+        .await
+        .map_err(|e| CarrierError::Internal(format!("握手失败: {e}")))?;
+    if !ok {
+        return Err(CarrierError::CapabilityDenied(format!(
+            "对方网关拒绝了本次访问（{contact_label} 未授权或凭证失效）——请在 App 里重新绑定或申请访问"
+        )));
+    }
+    let result = conn
+        .prompt(agent, message, session_id.as_deref(), |_| true)
+        .await
+        .map_err(|e| CarrierError::Internal(format!("对方响应失败: {e}")))?;
+
+    // Persist harvested sessionId for next-turn continuation.
+    if let Some(sid) = &result.session_id {
+        if let Some(mem) = ctx.memory {
+            let agent_id = ctx.caller_agent_id.unwrap_or("");
+            let owner = ctx.owner_id.unwrap_or("");
+            let _ = mem.kv_set(
+                agent_id,
+                owner,
+                "",
+                &format!("{SESSION_KEY_PREFIX}{contact_label}"),
+                Value::String(sid.clone()),
+            );
+        }
+    }
+
+    let mut out = serde_json::json!({ "response": result.text });
+    if let Some(sid) = &result.session_id {
+        out["session_id"] = Value::String(sid.clone());
+    }
+    if let Some(cost) = result.cost_usd {
+        out["cost_usd"] = serde_json::json!(cost);
+    }
+    Ok(out.to_string())
 }
 
 /// Hub tools for the system agent「me」— see module docs.
