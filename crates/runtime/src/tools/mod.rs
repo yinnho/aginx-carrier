@@ -12,6 +12,7 @@ pub mod collaboration;
 pub mod data_analyze;
 pub mod document;
 pub mod filesystem;
+pub mod gateway_hub;
 pub mod knowledge;
 pub mod kv;
 pub mod media;
@@ -117,6 +118,7 @@ pub fn builtin_modules(cli_exec_config: carrier_types::config::CliExecConfig) ->
         Box::new(collaboration::CollaborationTools),
         Box::new(automation::AutomationRulesTools),
         Box::new(a2a::A2aTools),
+        Box::new(gateway_hub::GatewayHubTools),
         Box::new(data_analyze::DataAnalyzeTools),
         Box::new(crate::api_tools::ApiToolRegisterModule),
     ];

@@ -596,6 +596,7 @@ dependencies = [
  "base64",
  "bytes",
  "carrier-clone",
+ "carrier-gateway",
  "carrier-lifecycle",
  "carrier-memory",
  "carrier-types",
