@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook", "crates/webui"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/gateway", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook", "crates/webui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -63,6 +63,7 @@ flate2 = "1"
 tar = "0.4"
 
 carrier-clone = { path = "crates/clone" }
+carrier-gateway = { path = "crates/gateway" }
 carrier-lifecycle = { path = "crates/lifecycle" }
 libc = "0.2"
 once_cell = "1"

@@ -477,6 +477,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "carrier-gateway"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "toml 0.8.23",
+ "tracing",
+ "webpki-roots",
+]
+
+[[package]]
 name = "carrier-ilink"
 version = "0.1.0"
 dependencies = [
@@ -667,6 +684,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "carrier-clone",
+ "carrier-gateway",
  "carrier-kernel",
  "carrier-runtime",
  "carrier-types",
