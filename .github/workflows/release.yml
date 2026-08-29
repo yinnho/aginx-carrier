@@ -14,9 +14,12 @@ jobs:
         with:
           targets: aarch64-unknown-linux-musl
 
-      - uses: mlugg/setup-zig@v1
-        with:
-          version: 0.16.0
+      - name: Install zig
+        run: |
+          curl -fsSL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz -o /tmp/zig.tar.xz
+          sudo tar -xJf /tmp/zig.tar.xz -C /usr/local
+          sudo ln -sf /usr/local/zig-*/zig /usr/local/bin/zig
+          zig version
 
       - uses: taiki-e/install-action@v2
         with:
