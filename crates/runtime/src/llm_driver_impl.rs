@@ -42,6 +42,18 @@ const LLM_BODY_READ_TIMEOUT_SECS: u64 = 120;
 /// finishes far below it.
 pub(crate) const LLM_STREAM_TOTAL_TIMEOUT_SECS: u64 = 1800;
 
+/// Response-header budget for streaming requests. Real SSE servers send
+/// headers immediately and then stream tokens, so a tight first-byte budget
+/// used to be safe — but brains that IGNORE the `stream` parameter (the
+/// AginxOS brain, per aginxos/docs/CARRIER.md §3.2) compute the ENTIRE
+/// response before sending any byte, and codex measured requests needing
+/// the 600s tier. Must stay well under LLM_STREAM_TOTAL_TIMEOUT_SECS.
+pub(crate) const STREAM_HEADER_TIMEOUT_SECS: u64 = 600;
+
+// Compile-time invariant: the header budget must never exceed the
+// whole-request streaming budget.
+const _: () = assert!(STREAM_HEADER_TIMEOUT_SECS <= LLM_STREAM_TOTAL_TIMEOUT_SECS);
+
 pub struct UnifiedHttpDriver {
     api_key: Zeroizing<String>,
     base_url: String,
@@ -993,6 +1005,104 @@ fn extract_think_tags(text: &str) -> (String, Option<String>) {
     (cleaned.trim().to_string(), thinking)
 }
 
+/// Pieces of a single complete (non-streaming) completion body — the shape
+/// brains that ignore the `stream` parameter return (AginxOS brain,
+/// aginxos/docs/CARRIER.md §3.2).
+struct NonStreamCompletion {
+    text: String,
+    reasoning: Option<String>,
+    tool_calls: Vec<(String, String, String)>,
+    finish_reason: Option<String>,
+    usage_input: u64,
+    usage_output: u64,
+}
+
+/// Parse one complete OpenAI-format JSON body. Mirrors `complete_openai`:
+/// unwraps the aginxbrain `{"code":"Success","output":{...}}` envelope,
+/// accepts `content` as String or array-of-parts, reads tool_calls and usage.
+/// Returns None when the body isn't a completion (no `choices` — garbage,
+/// error page), letting the caller decide how to surface that.
+fn parse_non_stream_completion(body: &str) -> Option<NonStreamCompletion> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let oai_json = if parsed.get("choices").is_some() {
+        parsed
+    } else if let Some(output) = parsed.get("output") {
+        output.clone()
+    } else {
+        parsed
+    };
+    let choices = oai_json.get("choices")?.as_array()?;
+    let choice = choices.first()?;
+    let message = choice.get("message")?;
+
+    let mut text = String::new();
+    match message.get("content") {
+        Some(serde_json::Value::String(s)) => text.push_str(s),
+        Some(serde_json::Value::Array(parts)) => {
+            for part in parts {
+                if let Some(s) = part.as_str() {
+                    text.push_str(s);
+                } else if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                    text.push_str(t);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let reasoning = message
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut tool_calls = Vec::new();
+    if let Some(calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+        for call in calls {
+            let func = call.get("function");
+            tool_calls.push((
+                call.get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                func.and_then(|f| f.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                func.and_then(|f| f.get("arguments"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            ));
+        }
+    }
+
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let usage = oai_json.get("usage");
+    let usage_input = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let usage_output = usage
+        .and_then(|u| u.get("completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Some(NonStreamCompletion {
+        text,
+        reasoning,
+        tool_calls,
+        finish_reason,
+        usage_input,
+        usage_output,
+    })
+}
+
 /// Extract a brief summary from thinking-only content.
 fn extract_thinking_summary(thinking: &str) -> String {
     let paragraphs: Vec<&str> = thinking
@@ -1048,7 +1158,7 @@ impl LlmDriver for UnifiedHttpDriver {
         oai_request.stream = true;
         oai_request.stream_options = Some(serde_json::json!({"include_usage": true}));
 
-        let resp = self.send_openai_with_retry(&mut oai_request, 60).await?;
+        let resp = self.send_openai_with_retry(&mut oai_request, STREAM_HEADER_TIMEOUT_SECS).await?;
 
         let mut buffer = String::new();
         let mut text_content = String::new();
@@ -1070,6 +1180,15 @@ impl LlmDriver for UnifiedHttpDriver {
         // upstream is detected quickly and retried, instead of waiting the full
         // inter-chunk idle. Flipped to true on the first real token.
         let mut got_first_token = false;
+        // Whether any SSE `data:` frame was seen. A brain that ignores the
+        // `stream` parameter answers with a single complete JSON body — no
+        // `data:` lines — and the SSE parser below would silently skip every
+        // line of it (turning the whole turn into an empty EndTurn). The
+        // non-SSE fallback after the loop keys off this flag.
+        let mut saw_sse_frame = false;
+        // Lines the SSE parser skipped, kept ONLY while no SSE frame has been
+        // seen — that body may be the brain's single complete JSON response.
+        let mut non_sse_body = String::new();
 
         let mut byte_stream = resp.bytes_stream();
         while let Some(chunk) = next_chunk_with_timeouts(
@@ -1095,7 +1214,17 @@ impl LlmDriver for UnifiedHttpDriver {
 
                 let data = match line.strip_prefix("data:") {
                     Some(d) => d.trim_start(),
-                    None => continue,
+                    None => {
+                        // Not SSE framing. Until a real frame proves otherwise,
+                        // this could be a brain that ignored `stream` and sent
+                        // one complete JSON body (CARRIER.md §3.2) — stash the
+                        // line for the non-SSE fallback after the loop.
+                        if !saw_sse_frame {
+                            non_sse_body.push_str(&line);
+                            non_sse_body.push('\n');
+                        }
+                        continue;
+                    }
                 };
                 if data == "[DONE]" {
                     continue;
@@ -1119,6 +1248,8 @@ impl LlmDriver for UnifiedHttpDriver {
                     Some(c) => c,
                     None => continue,
                 };
+                saw_sse_frame = true;
+                non_sse_body.clear();
 
                 // Determine if this frame carries genuine token output
                 // (non-empty content/reasoning/tool_call). Only genuine
@@ -1215,6 +1346,70 @@ impl LlmDriver for UnifiedHttpDriver {
                     // budget to the looser inter-chunk idle budget.
                     if got_real_content {
                         got_first_token = true;
+                    }
+                }
+            }
+        }
+
+        // Non-SSE fallback: the upstream ignored `stream` and answered with
+        // one complete JSON body (AginxOS brain behavior — CARRIER.md §3.2).
+        // Parse it and populate the same accumulators the SSE path fills, so
+        // downstream consumers see one big text/tool "chunk" and the final
+        // CompletionResponse is built from real content instead of silence.
+        if !saw_sse_frame {
+            // A body without a trailing newline leaves its last line in
+            // `buffer` (the line loop only consumes complete lines).
+            if !buffer.is_empty() {
+                non_sse_body.push_str(&buffer);
+            }
+            match parse_non_stream_completion(&non_sse_body) {
+                Some(ns) => {
+                    if let Some(reasoning) = ns.reasoning {
+                        if !reasoning.is_empty() {
+                            reasoning_content = reasoning.clone();
+                            let _ = tx
+                                .send(StreamEvent::ThinkingDelta { text: reasoning })
+                                .await;
+                        }
+                    }
+                    if !ns.text.is_empty() {
+                        text_content = ns.text.clone();
+                        for action in think_filter.process(&ns.text) {
+                            match action {
+                                FilterAction::EmitText(t) => {
+                                    let _ = tx.send(StreamEvent::TextDelta { text: t }).await;
+                                }
+                                FilterAction::EmitThinking(t) => {
+                                    let _ =
+                                        tx.send(StreamEvent::ThinkingDelta { text: t }).await;
+                                }
+                            }
+                        }
+                    }
+                    for (id, name, args) in &ns.tool_calls {
+                        tool_accum.push((id.clone(), name.clone(), args.clone()));
+                        let _ = tx
+                            .send(StreamEvent::ToolUseStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                            })
+                            .await;
+                        let _ = tx
+                            .send(StreamEvent::ToolInputDelta { text: args.clone() })
+                            .await;
+                    }
+                    if let Some(fr) = ns.finish_reason {
+                        finish_reason = Some(fr);
+                    }
+                    usage.input_tokens = ns.usage_input;
+                    usage.output_tokens = ns.usage_output;
+                }
+                None => {
+                    if !non_sse_body.trim().is_empty() {
+                        warn!(
+                            len = non_sse_body.len(),
+                            "Non-SSE response body did not parse as a completion (no SSE frames seen)"
+                        );
                     }
                 }
             }
@@ -1360,5 +1555,58 @@ mod tests {
         assert_eq!(mime_to_audio_format("audio/mpeg"), "mp3");
         assert_eq!(mime_to_audio_format("audio/wav"), "wav");
         assert_eq!(mime_to_audio_format("audio/unknown"), "mp3");
+    }
+
+    // --- non-SSE single-body fallback (CARRIER.md §3.2) ---
+
+    #[test]
+    fn test_parse_non_stream_completion_standard() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"hello","reasoning_content":"thinking...","tool_calls":[{"id":"c1","type":"function","function":{"name":"web_search","arguments":"{\"q\":\"x\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
+        let ns = parse_non_stream_completion(body).expect("standard body should parse");
+        assert_eq!(ns.text, "hello");
+        assert_eq!(ns.reasoning.as_deref(), Some("thinking..."));
+        assert_eq!(
+            ns.tool_calls,
+            vec![("c1".to_string(), "web_search".to_string(), "{\"q\":\"x\"}".to_string())]
+        );
+        assert_eq!(ns.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!((ns.usage_input, ns.usage_output), (10, 5));
+    }
+
+    #[test]
+    fn test_parse_non_stream_completion_output_envelope() {
+        // aginxbrain wraps some responses in {"code":"Success","output":{...}}
+        let body = r#"{"code":"Success","output":{"choices":[{"message":{"content":"wrapped"},"finish_reason":"stop"}]}}"#;
+        let ns = parse_non_stream_completion(body).expect("enveloped body should parse");
+        assert_eq!(ns.text, "wrapped");
+        assert_eq!(ns.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn test_parse_non_stream_completion_content_parts() {
+        let body = r#"{"choices":[{"message":{"content":[{"type":"text","text":"part one "},{"type":"text","text":"part two"}]},"finish_reason":"stop"}]}"#;
+        let ns = parse_non_stream_completion(body).expect("content-parts body should parse");
+        assert_eq!(ns.text, "part one part two");
+    }
+
+    #[test]
+    fn test_parse_non_stream_completion_no_trailing_newline_or_with() {
+        // Bodies arrive both with and without a trailing newline depending on
+        // the server — serde_json tolerates trailing whitespace either way.
+        for body in [
+            r#"{"choices":[{"message":{"content":"a"},"finish_reason":"stop"}]}"#,
+            "{\"choices\":[{\"message\":{\"content\":\"a\"},\"finish_reason\":\"stop\"}]}\n",
+        ] {
+            let ns = parse_non_stream_completion(body).expect("body should parse");
+            assert_eq!(ns.text, "a");
+        }
+    }
+
+    #[test]
+    fn test_parse_non_stream_completion_garbage_returns_none() {
+        assert!(parse_non_stream_completion("").is_none());
+        assert!(parse_non_stream_completion("not json at all").is_none());
+        // JSON but no choices (error page shape) → None, caller warns
+        assert!(parse_non_stream_completion(r#"{"error":"bad key"}"#).is_none());
     }
 }
