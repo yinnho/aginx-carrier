@@ -2,11 +2,11 @@
 
 ## 项目定位
 
-**aginx-carrier 是分身 OS**：托管数字分身的 Agent 运行时，aginx Agent 互联网上"网站"之一（aginx=nginx，本仓=网站）。从 OpenCarrier fork 而来，定位/分层/借用机制见 `../docs/AGINX-CARRIER-VISION.md`。
+**aginx-carrier 是分身 OS**：托管数字分身的 Agent 运行时，aginx Agent 互联网上"网站"之一（aginx=nginx，本仓=网站）。从 OpenCarrier **搬运移植**而来（独立仓，非 fork——零共享 git 历史，见下），定位/分层/借用机制见 `../docs/AGINX-CARRIER-VISION.md`。
 
 **与 OpenCarrier 的关系（铁律）**：
 - 源仓库 `~/Documents/opencarrier/opencarrier/` 是**只读参考**——要搬代码从那里 cp，绝不反向修改
-- 本仓是 fork 改造版：单操作者（无多租户）、私有化部署、aginx 原生接入
+- 本仓是**独立移植仓，不是 fork**：git 取证过——commit 全始于 init 骨架、逐 crate 搬运改名、零共享 git 对象、无 merge-base、无 opencarrier remote。单操作者（无多租户）、私有化部署、aginx 原生接入；**各自进化，不追平，无 cherry-pick 义务**
 - 搬运策略：一边建一边复制——每个 crate 按依赖顺序搬，搬运时就完成改名+剥多租户+适配，每步 `cargo build && cargo test` 全绿
 
 ## 约定

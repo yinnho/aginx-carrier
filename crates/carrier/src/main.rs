@@ -1,6 +1,6 @@
 //! aginx-carrier — 分身 OS（aginx 网络上的一个网站）
 //!
-//! 从 OpenCarrier fork 而来的个人部署版：单操作者、私有化、aginx 原生。
+//! 从 OpenCarrier 搬运移植的独立仓（非 fork——零共享 git 历史，各自进化）：单操作者、私有化、aginx 原生。
 //! 定位与总纲见 aginx 生态 docs/AGINX-CARRIER-VISION.md。
 
 mod acp;
