@@ -15,7 +15,7 @@
 - **配置/数据目录**：`~/.aginx/carrier/`
 - **git 历史**：纯 cp 不带历史，opencarrier 仓库是档案（历史在那里查）
 - **通道范围**：入站两条——iLink（人→agent）+ webhook（机器→agent，`carrier-webhook`，daemon `start` 专属 HTTP 监听，默认关、移动端不起）；weixin-oa/企微kf 后置
-- **AginxOS 融合（2026-08-30 定调）**：全力配合 AginxOS（智能体手机），化身即 app、carrier 是化身 runtime（需求文档 `~/Documents/aginxos/docs/CARRIER.md`）。**webui/`web` 子命令已退役**——浏览器面不再有；化身管理走 CLI：`aginx-carrier agent install|list|remove|update`（市场机制在 `carrier-clone::market`，UI 无关层）。用户可见文案用「化身」，内部代码 clone 不改名
+- **AginxOS 融合（2026-08-30 定调）**：全力配合 AginxOS（智能体手机），化身即 app、carrier 是化身 runtime（需求文档 `~/Documents/aginxos/docs/CARRIER.md`）。**webui/`web` 子命令已退役**——浏览器面不再有；化身管理走 CLI：`aginx-carrier agent install|list|remove|update`（市场机制在 `carrier-clone::market`，UI 无关层）。远程化身句柄（§3.3 远程类）：`agent remote add|remove` 注册 agent:// 地址，注册表 `~/.aginx/carrier/remote-agents.json`（0600，含访客 token），`agent list` 同构合并（STATE=remote），acp/ask 对远程别名不 boot kernel、经 carrier-gateway agent_client 转发。用户可见文案用「化身」，内部代码 clone 不改名
 
 ## Build & Verify Workflow
 

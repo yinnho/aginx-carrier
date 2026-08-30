@@ -1,9 +1,9 @@
-//! agent:// 协议客户端——webui 经网关路由外部 CLI 工具（第三刀）。
+//! agent:// 协议客户端——aginx-carrier 侧连接外部网关的统一通路。
 //!
-//! agc（CLI）之后生态的第二个协议客户端，以库形态内嵌于 webui。
-//! 连接一次性：TLS 连 relay → `connect` 握手（按 target 路由到网关）→
-//! `initialize` → `prompt`（chunk 流式）/ `sessions/list`。协议形状逐字对齐
-//! agc/src/main.rs。
+//! agc（CLI）之后生态的第二个协议客户端，以库形态内嵌于 carrier
+//!（probe 探测 / acp 远程化身句柄转发 / 访客绑定与同意流）。连接一次性：
+//! TLS 连 relay → `connect` 握手（按 target 路由到网关）→ `initialize` →
+//! `prompt`（chunk 流式）/ `sessions/list`。协议形状逐字对齐 agc/src/main.rs。
 //!
 //! 会话续接（批2 语义）：网关翻译器（ACP.md §2.5/§2.6）把 CLI 方言翻成
 //! 纯文本 chunk，并从 agent 输出收割真会话 id——最终 result 帧带
@@ -28,7 +28,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_LINE_SIZE: usize = 8 * 1024 * 1024;
 
 /// 网关端点（relay 形态）。默认取自本机网关配置 `~/.aginx/config.toml`
-/// 的 `[relay]` 段——webui 与网关同机同用户，零新增配置。
+/// 的 `[relay]` 段——carrier 与网关同机同用户时零新增配置。
 #[derive(Debug, Clone)]
 pub struct AgentEndpoint {
     /// relay 路由 id（如 "qi7o6bj5"），connect 消息的 target
@@ -375,7 +375,7 @@ impl AgentConn {
     pub async fn initialize(&mut self) -> Result<bool, String> {
         let mut params = json!({
             "protocolVersion": "0.1.0",
-            "clientInfo": {"name": "aginx-carrier-webui", "version": "0.1.0"}
+            "clientInfo": {"name": "aginx-carrier", "version": env!("CARGO_PKG_VERSION")}
         });
         if let Some(ref token) = self.auth_token {
             params["token"] = json!(token);

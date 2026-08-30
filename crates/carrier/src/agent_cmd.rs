@@ -19,6 +19,11 @@ pub fn run(action: AgentAction) -> anyhow::Result<()> {
 }
 
 async fn run_async(action: AgentAction) -> anyhow::Result<()> {
+    // 远程句柄是纯注册表文件操作：不 boot kernel（装卸竞态教训）也
+    // 不需要 brain。
+    if let AgentAction::Remote { action } = action {
+        return crate::remote::run_remote(action);
+    }
     // kernel boot 对缺失 brain 是硬失败——CLI 面兜底写骨架（安装/列表
     // 本身不需要 brain，不该被它挡住）。
     aginx_carrier::wiring::seed_brain_skeleton_if_missing();
@@ -34,6 +39,7 @@ async fn run_async(action: AgentAction) -> anyhow::Result<()> {
         }
         AgentAction::Remove { name } => remove(&kernel, &name),
         AgentAction::Update { name } => update(&kernel, &name).await,
+        AgentAction::Remote { .. } => unreachable!("Remote 已在 boot 前分派"),
     }
 }
 
@@ -52,6 +58,9 @@ fn daemon_restart_hint() {
 async fn install(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {
     if !carrier_clone::market::valid_clone_name(name) {
         anyhow::bail!("化身名只允许小写字母、数字与连字符（1-64 位）");
+    }
+    if crate::remote::find(name).is_some() {
+        anyhow::bail!("{name} 已是远程化身句柄——先 `agent remote remove {name}` 再安装本地化身");
     }
     let hub_cfg = kernel.config.hub.clone();
     let key = read_key(&hub_cfg.api_key_env)?;
@@ -76,8 +85,11 @@ async fn install(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {
 fn list(kernel: &CarrierKernel) {
     let mut entries = kernel.registry.list();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    if entries.is_empty() {
-        println!("（本机还没有化身——`aginx-carrier agent install <name>` 从 DupHub 安装）");
+    let remotes = crate::remote::load();
+    if entries.is_empty() && remotes.is_empty() {
+        println!(
+            "（本机还没有化身——`agent install <name>` 从 DupHub 安装；`agent remote add <别名> <agent://地址>` 注册远程化身）"
+        );
         return;
     }
     println!("{:<24} {:<12} {:<10} DISPLAY", "NAME", "VERSION", "STATE");
@@ -88,6 +100,13 @@ fn list(kernel: &CarrierKernel) {
             e.manifest.version,
             format!("{:?}", e.state).to_lowercase(),
             e.manifest.display_name
+        );
+    }
+    // 远程化身同构入列：STATE=remote，DISPLAY 带转发目标。
+    for r in remotes {
+        println!(
+            "{:<24} {:<12} {:<10} {} → {}/{}",
+            r.name, "-", "remote", r.display_name, r.url, r.agent
         );
     }
 }

@@ -4,8 +4,13 @@
 //! ndjson JSON-RPC（ACP 标准，协议全文见 aginx 仓 ACP.md）。`initialize` 只
 //! 做握手零开销；`session/new` 才进程内 boot kernel（lazy，boot 失败回
 //! JSON-RPC error 不崩桥）；`session/prompt` 直投 `kernel.send_message`，
-//! 回包走 `agent_message_chunk` + `end_turn`。逐 token 流式与工具事件随
-//! `send_message_streaming` 接入（后续阶段）。
+//! 回包走 `agent_message_chunk` + `end_turn`。
+//!
+//! 远程化身句柄（CARRIER.md §3.3 远程类）：`--clone` 是 `agent remote add`
+//! 注册的别名时，本桥变成纯转发——不 boot kernel，`session/prompt` 经
+//! carrier-gateway 的 agent:// 外部协议投递到目标网关，chunk 即时转成 ACP
+//! 通知，网关收割的 sessionId 存回会话供续接。本机化身和远程化身对使用
+//! 者同构。
 //!
 //! stdout 只允许 ACP 消息（tracing 全走 stderr）。prompt 处理并发化：
 //! reader 线程喂数，prompt 每个起 tokio task，`session/cancel` 打标志位让
@@ -16,14 +21,30 @@ use std::io::{BufRead as _, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use carrier_gateway::agent_client::AgentConn;
 use carrier_kernel::kernel::CarrierKernel;
 use carrier_memory::session::SessionTicket;
 use carrier_types::agent::AgentId;
 
-/// One ACP session = one kernel agent + a cancellation flag.
+use crate::remote::RemoteHandle;
+
+/// One ACP session = one agent binding + a cancellation flag. 绑定两态：
+/// 本地化身（kernel agent）或远程化身句柄（网关转发）。
 struct Session {
-    agent_id: AgentId,
+    kind: SessionKind,
     cancelled: Arc<AtomicBool>,
+}
+
+enum SessionKind {
+    Local {
+        agent_id: AgentId,
+    },
+    /// 远程化身：gw_session 是目标网关侧收割的会话 id（首轮 None，
+    /// 每轮收割回写——续接链在网关台账）。
+    Remote {
+        handle: RemoteHandle,
+        gw_session: Arc<Mutex<Option<String>>>,
+    },
 }
 
 struct BridgeState {
@@ -189,8 +210,8 @@ pub fn run(clone: String, session: Option<String>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Boot the kernel (once) and register a session for the bridge's clone.
-fn boot_and_register(state: &BridgeState) -> Result<String, String> {
+/// Boot the kernel (once, lazy) — `initialize` stays free.
+fn ensure_kernel(state: &BridgeState) -> Result<Arc<CarrierKernel>, String> {
     let mut guard = state.kernel.lock().unwrap();
     if guard.is_none() {
         let kernel = CarrierKernel::boot(None).map_err(|e| format!("kernel boot failed: {e}"))?;
@@ -201,19 +222,47 @@ fn boot_and_register(state: &BridgeState) -> Result<String, String> {
         kernel.set_self_handle();
         *guard = Some(kernel);
     }
-    let kernel = Arc::clone(guard.as_ref().unwrap());
-    drop(guard);
+    Ok(Arc::clone(guard.as_ref().unwrap()))
+}
 
-    let entry = kernel
-        .registry
-        .find_by_name(&state.clone)
-        .ok_or_else(|| format!("clone '{}' not installed on this carrier", state.clone))?;
+/// Resolve `--clone` to a session binding and register a session.
+///
+/// 分派三路：本地化身（aginx.toml 在册）走 lazy boot——与既有行为一致，
+/// boot 失败保留原报错路径；远程句柄（且无同名本地化身）不 boot kernel
+/// （本机无 brain/无本地化身也能对话远程化身）；两者皆非时落回 lazy boot，
+/// 让 "未安装" 类错误原样报告。名字互斥在注册期拦死（remote add 双向查）。
+fn boot_and_register(state: &BridgeState) -> Result<String, String> {
+    let kind = if carrier_kernel::aginx_net::registration_exists_default(&state.clone) {
+        let kernel = ensure_kernel(state)?;
+        let entry = kernel
+            .registry
+            .find_by_name(&state.clone)
+            .ok_or_else(|| format!("clone '{}' not installed on this carrier", state.clone))?;
+        SessionKind::Local { agent_id: entry.id }
+    } else if let Some(handle) = crate::remote::find(&state.clone) {
+        SessionKind::Remote {
+            handle,
+            gw_session: Arc::new(Mutex::new(None)),
+        }
+    } else {
+        let kernel = ensure_kernel(state)?;
+        let entry = kernel
+            .registry
+            .find_by_name(&state.clone)
+            .ok_or_else(|| {
+                format!(
+                    "clone '{}' not installed on this carrier（agent install 装本地化身 / agent remote add 注册远程化身）",
+                    state.clone
+                )
+            })?;
+        SessionKind::Local { agent_id: entry.id }
+    };
 
     let session_id = uuid::Uuid::new_v4().to_string();
     state.sessions.lock().unwrap().insert(
         session_id.clone(),
         Arc::new(Session {
-            agent_id: entry.id,
+            kind,
             cancelled: Arc::new(AtomicBool::new(false)),
         }),
     );
@@ -277,6 +326,34 @@ async fn handle_prompt(
         }
     };
 
+    // 远程化身句柄：经网关外部协议转发（agent_client），本机零 kernel 参与。
+    if let SessionKind::Remote { handle, gw_session } = &session.kind {
+        if params.get("sessionTicket").is_some() {
+            // 借用轮的会话真源在分身主人侧——远程句柄不是主人，无从出票/收票。
+            respond_error(
+                &out,
+                &id,
+                -32602,
+                "远程化身会话不支持借用轮（sessionTicket）——借用请走主人网关的借用通道",
+            );
+            return;
+        }
+        handle_remote_prompt(
+            Arc::clone(&out),
+            id,
+            sid,
+            handle.clone(),
+            Arc::clone(gw_session),
+            text,
+            Arc::clone(&session.cancelled),
+        )
+        .await;
+        return;
+    }
+
+    let SessionKind::Local { agent_id } = session.kind else {
+        unreachable!("Remote 已在上分支返回");
+    };
     let kernel = Arc::clone(state.kernel.lock().unwrap().as_ref().unwrap());
     let cancelled = Arc::clone(&session.cancelled);
 
@@ -305,7 +382,7 @@ async fn handle_prompt(
             id,
             sid,
             kernel,
-            session.agent_id,
+            agent_id,
             text,
             ticket_val,
             materials,
@@ -322,7 +399,7 @@ async fn handle_prompt(
     // kernel_handle 传 self——跨 agent 工具（clone_install 等）依赖它。
     let kh: Arc<dyn carrier_runtime::kernel_handle::KernelHandle> = kernel.clone();
     let turn = kernel.send_message_with_handle(
-        session.agent_id,
+        agent_id,
         &text,
         Some(kh),
         Some(format!("acp:{sid}")),
@@ -359,6 +436,79 @@ async fn handle_prompt(
             respond(&out, &id, serde_json::json!({"stopReason": "cancelled"}))
         }
         Err(e) => respond_error(&out, &id, -32002, &format!("agent turn failed: {e}")),
+    }
+}
+
+/// 远程化身轮：连目标网关（agent:// 外部协议）→ initialize → prompt。
+/// chunk 即时转成 ACP `agent_message_chunk` 通知；网关收割的 sessionId 存回
+/// 会话（gw_session）供下轮续接。cancel 旗标经 select 打断等待——连接随轮
+/// 结束即弃（一次性连接，不复用）。
+#[allow(clippy::too_many_arguments)]
+async fn handle_remote_prompt(
+    out: Arc<Mutex<std::io::Stdout>>,
+    id: serde_json::Value,
+    sid: String,
+    handle: RemoteHandle,
+    gw_session: Arc<Mutex<Option<String>>>,
+    text: String,
+    cancelled: Arc<AtomicBool>,
+) {
+    let Some(ep) = crate::remote::endpoint(&handle) else {
+        respond_error(
+            &out,
+            &id,
+            -32003,
+            &format!(
+                "无法解析远程化身地址 {}（需 agent://<id>.relay.<domain> 形态；本机 ~/.aginx/config.toml 缺 [relay] 段时 relay secret 无源）",
+                handle.url
+            ),
+        );
+        return;
+    };
+    let mut conn = match AgentConn::connect(&ep).await {
+        Ok(c) => c,
+        Err(e) => {
+            respond_error(&out, &id, -32003, &format!("连接远程网关失败: {e}"));
+            return;
+        }
+    };
+    if let Err(e) = conn.initialize().await {
+        respond_error(&out, &id, -32003, &format!("远程网关握手失败: {e}"));
+        return;
+    }
+
+    let prev_sid = gw_session.lock().unwrap().clone();
+    let out2 = Arc::clone(&out);
+    let sid2 = sid.clone();
+    let fut = conn.prompt(&handle.agent, &text, prev_sid.as_deref(), move |chunk| {
+        update(
+            &out2,
+            &sid2,
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": chunk},
+            }),
+        );
+        true
+    });
+    tokio::pin!(fut);
+    let result = tokio::select! {
+        r = &mut fut => r,
+        _ = wait_cancelled(cancelled) => Err("cancelled".to_string()),
+    };
+
+    match result {
+        Ok(r) => {
+            // 续接链：收割到的网关会话 id 回写（harvest 已过字符集门）。
+            if let Some(gsid) = r.session_id {
+                *gw_session.lock().unwrap() = Some(gsid);
+            }
+            respond(&out, &id, serde_json::json!({"stopReason": "end_turn"}));
+        }
+        Err(e) if e == "cancelled" => {
+            respond(&out, &id, serde_json::json!({"stopReason": "cancelled"}))
+        }
+        Err(e) => respond_error(&out, &id, -32003, &format!("远程轮失败: {e}")),
     }
 }
 
@@ -473,6 +623,16 @@ async fn wait_cancelled(flag: Arc<AtomicBool>) {
 /// kernel 会话 label = `aginx:<session_id>`——同 id 跨进程续接同一会话
 /// （连续性由 carrier 侧 session 存储保证，网关台账只记账目）。
 fn run_ask(clone: &str, session: Option<&str>, message: &str) -> anyhow::Result<()> {
+    // 远程化身句柄：无本地 kernel，直接走网关外部协议。`--session` 语义
+    // 与本地不同——它是网关侧收割的会话 id（result 行原样回吐，下轮喂回
+    // 即续接同一条远程会话）。
+    if let Some(handle) = crate::remote::find(clone) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        return runtime.block_on(run_remote_ask(&handle, session, message));
+    }
+
     // Charset gate（网关侧同款注入门）：非法 id 弃用改铸造，不炸轮。
     let sid = session
         .filter(|s| valid_session_id(s))
@@ -558,6 +718,89 @@ fn run_ask(clone: &str, session: Option<&str>, message: &str) -> anyhow::Result<
             Err(e) => Err(anyhow::anyhow!("agent turn task panicked: {e}")),
         }
     })
+}
+
+/// 远程化身的一次性 ask 轮：claude-stream-json 方言同本地（assistant 行
+/// 流式 + result 行收尾）。`--session` 喂的是网关收割 id；result 行回吐收割
+/// 值——下轮 `--session` 喂它即续接。connect/握手失败在输出任何方言行之前，
+/// 直接非 0 退出（stderr 报因）；轮中失败发 error result 行保会话链（同本地）。
+async fn run_remote_ask(
+    handle: &RemoteHandle,
+    session: Option<&str>,
+    message: &str,
+) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    // Charset gate 同本地（防注入 resume 参数）。未提供则只铸本地记账 id，
+    // 不发给网关（网关侧新会话由它自己开）。
+    let provided = session
+        .filter(|s| valid_session_id(s))
+        .map(str::to_string);
+    let local_sid = provided
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let Some(ep) = crate::remote::endpoint(handle) else {
+        anyhow::bail!(
+            "无法解析远程化身地址 {}（需 agent://<id>.relay.<domain> 形态；本机 ~/.aginx/config.toml 缺 [relay] 段时 relay secret 无源）",
+            handle.url
+        );
+    };
+    let mut conn = AgentConn::connect(&ep)
+        .await
+        .map_err(|e| anyhow::anyhow!("连接远程网关失败: {e}"))?;
+    conn.initialize()
+        .await
+        .map_err(|e| anyhow::anyhow!("远程网关握手失败: {e}"))?;
+
+    use std::io::Write as _;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let r = conn
+        .prompt(&handle.agent, message, provided.as_deref(), |chunk| {
+            writeln!(out, "{}", stream_assistant_line(chunk)).ok();
+            out.flush().ok();
+            true
+        })
+        .await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    match r {
+        Ok(r) => {
+            let sid_out = r.session_id.unwrap_or(local_sid);
+            writeln!(
+                out,
+                "{}",
+                stream_result_line(
+                    &sid_out,
+                    "success",
+                    r.text.trim(),
+                    r.num_turns.unwrap_or(0) as u32,
+                    duration_ms,
+                    false,
+                )
+            )
+            .ok();
+            out.flush().ok();
+            Ok(())
+        }
+        Err(e) => {
+            writeln!(
+                out,
+                "{}",
+                stream_result_line(
+                    &local_sid,
+                    "error_turn",
+                    &format!("remote turn failed: {e}"),
+                    0,
+                    duration_ms,
+                    true,
+                )
+            )
+            .ok();
+            out.flush().ok();
+            Ok(())
+        }
+    }
 }
 
 /// 网关侧注入门同款：`[A-Za-z0-9_-]`。

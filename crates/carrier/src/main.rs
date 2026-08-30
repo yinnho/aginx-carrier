@@ -8,6 +8,7 @@ mod agent_cmd;
 mod notify;
 mod probe;
 mod qrlogin;
+mod remote;
 mod start;
 
 use clap::{Parser, Subcommand};
@@ -124,7 +125,7 @@ enum AgentAction {
         /// DupHub 上的化身名
         name: String,
     },
-    /// 列出本机化身
+    /// 列出本机化身（本地 + 远程句柄同构合并）
     List,
     /// 卸载化身（杀后台/清 cron/删 workspace/离网）
     Remove {
@@ -133,7 +134,34 @@ enum AgentAction {
     },
     /// 更新化身（Hub 最新版本 ≠ 本地版本才重装）
     Update {
-        /// 本��化身名
+        /// 本机化身名
+        name: String,
+    },
+    /// 远程化身句柄：注册别人网关上的分身，列表与对话同构（CARRIER.md §3.3 远程类）
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RemoteAction {
+    /// 注册远程化身（agent:// 网关地址）
+    Add {
+        /// 本地别名（对使用者即化身名）
+        name: String,
+        /// 网关地址：agent://<id>.relay.<domain>[:port][/分身名]
+        url: String,
+        /// 显示名（缺省 = 别名）
+        #[arg(long)]
+        display_name: Option<String>,
+        /// 访客 token（私有网关准入；public 网关可省）
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// 移除远程化身句柄（只删本机注册，不影响对方网关）
+    Remove {
+        /// 本地别名
         name: String,
     },
 }
