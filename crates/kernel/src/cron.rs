@@ -96,12 +96,18 @@ impl CronScheduler {
     }
 
     /// Persist all jobs to DB (preferred) or JSON (fallback).
+    ///
+    /// DB 路径逐行 `upsert_volatile`：新 job 落全量、既有行只更新易变列，
+    /// **不整表重写**——CLI 并发 pause/remove 的 DB 编辑不会被周期
+    /// persist 冲掉（结构性删除走 remove_job 的定点 delete）。
     pub fn persist(&self) -> CarrierResult<()> {
         let metas: Vec<JobMeta> = self.jobs.iter().map(|r| r.value().clone()).collect();
 
         // Try DB first
         if let Some(ref store) = self.db_store {
-            store.save_all(&metas)?;
+            for meta in &metas {
+                store.upsert_volatile(meta)?;
+            }
             debug!(count = metas.len(), "Persisted cron jobs to database");
             return Ok(());
         }
@@ -155,15 +161,24 @@ impl CronScheduler {
     }
 
     /// Remove a job by ID. Returns the removed `CronJob`.
+    /// DB 直删（定点）——daemon/CLI 共用；周期 persist 不做整表重写，
+    /// 删除必须在这里落库，否则 reconcile 会把 DB 残行复活回内存。
     pub fn remove_job(&self, id: CronJobId) -> CarrierResult<CronJob> {
-        self.jobs
+        let removed = self
+            .jobs
             .remove(&id)
             .map(|(_, meta)| meta.job)
-            .ok_or_else(|| CarrierError::Internal(format!("Cron job {id} not found")))
+            .ok_or_else(|| CarrierError::Internal(format!("Cron job {id} not found")))?;
+        if let Some(ref store) = self.db_store {
+            if let Err(e) = store.delete(&id.to_string()) {
+                warn!(job_id = %id, error = %e, "Cron job DB delete failed");
+            }
+        }
+        Ok(removed)
     }
 
     /// Enable or disable a job. Re-enabling resets errors and recomputes
-    /// `next_run`.
+    /// `next_run`. DB 定点写回（enabled 列 only）——CLI 暂停/恢复即此路径。
     pub fn set_enabled(&self, id: CronJobId, enabled: bool) -> CarrierResult<()> {
         match self.jobs.get_mut(&id) {
             Some(mut meta) => {
@@ -171,6 +186,11 @@ impl CronScheduler {
                 if enabled {
                     meta.consecutive_errors = 0;
                     meta.job.next_run = Some(initial_next_run(&meta.job.schedule));
+                }
+                if let Some(ref store) = self.db_store {
+                    if let Err(e) = store.set_enabled(&id.to_string(), enabled) {
+                        warn!(job_id = %id, error = %e, "Cron job DB set_enabled failed");
+                    }
                 }
                 Ok(())
             }
@@ -206,10 +226,17 @@ impl CronScheduler {
         self.jobs.iter().map(|r| r.value().job.clone()).collect()
     }
 
+    /// List all jobs with full runtime metadata（one_shot/last_status/
+    /// consecutive_errors）——CLI 任务面（CARRIER.md §3.4-3）消费。
+    pub fn list_all_metas(&self) -> Vec<JobMeta> {
+        self.jobs.iter().map(|r| r.value().clone()).collect()
+    }
+
     /// Remove all cron jobs belonging to a specific agent.
     ///
     /// Used when an agent is deleted so its cron entries don't linger as
     /// orphans pointing at a dead UUID. Returns the number of jobs removed.
+    /// DB 定点直删（persist 已不整表重写，删除必须在此落库）。
     pub fn remove_agent_jobs(&self, agent_id: AgentId) -> usize {
         let ids: Vec<CronJobId> = self
             .jobs
@@ -220,6 +247,11 @@ impl CronScheduler {
         let count = ids.len();
         for id in ids {
             self.jobs.remove(&id);
+            if let Some(ref store) = self.db_store {
+                if let Err(e) = store.delete(&id.to_string()) {
+                    warn!(job_id = %id, error = %e, "Cron job DB delete failed");
+                }
+            }
         }
         if count > 0 {
             info!(agent = %agent_id, count, "Removed cron jobs for deleted agent");
@@ -284,7 +316,7 @@ impl CronScheduler {
     /// Record a successful execution for a job.
     ///
     /// Updates `last_run`, resets errors, and either removes the job (if
-    /// one-shot) or advances `next_run`.
+    /// one-shot) or advances `next_run`. DB 定点写回（易变列）。
     pub fn record_success(&self, id: CronJobId) {
         // We need to check one_shot first, then potentially remove.
         let should_remove = {
@@ -300,22 +332,44 @@ impl CronScheduler {
             }
         };
         if should_remove {
-            self.jobs.remove(&id);
+            let _ = self.remove_job(id);
+        } else if let Some(ref store) = self.db_store {
+            let (last_run, next_run) = match self.jobs.get(&id) {
+                Some(meta) => (meta.job.last_run, meta.job.next_run),
+                None => return,
+            };
+            if let Some(last_run) = last_run {
+                if let Err(e) = store.record_outcome(
+                    &id.to_string(),
+                    last_run,
+                    next_run,
+                    "ok",
+                    0,
+                    None,
+                ) {
+                    warn!(job_id = %id, error = %e, "Cron outcome DB write failed");
+                }
+            }
         }
     }
 
     /// Record a failed execution for a job.
     ///
     /// Increments the consecutive error counter. If it reaches
-    /// [`MAX_CONSECUTIVE_ERRORS`], the job is automatically disabled.
+    /// [`MAX_CONSECUTIVE_ERRORS`], the job is automatically disabled
+    /// （停用也定点落库——重启后仍停）。
     pub fn record_failure(&self, id: CronJobId, error_msg: &str) {
         // one_shot jobs are removed on first completion (success or failure)
         // to prevent duplicate work, especially in pipeline chains.
-        let should_remove = {
+        let (should_remove, last_run, next_run, errors, auto_disabled, status) = {
             if let Some(mut meta) = self.jobs.get_mut(&id) {
                 meta.job.last_run = Some(Utc::now());
-                meta.last_status = Some(format!("error: {}", carrier_types::truncate_str(error_msg, 256)));
+                meta.last_status = Some(format!(
+                    "error: {}",
+                    carrier_types::truncate_str(error_msg, 256)
+                ));
                 meta.consecutive_errors += 1;
+                let mut auto_disabled = false;
                 if meta.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                     warn!(
                         job_id = %id,
@@ -323,18 +377,94 @@ impl CronScheduler {
                         "Auto-disabling cron job after repeated failures"
                     );
                     meta.job.enabled = false;
+                    auto_disabled = true;
                 } else if !meta.one_shot {
                     meta.job.next_run =
                         Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
                 }
-                meta.one_shot
+                (
+                    meta.one_shot,
+                    meta.job.last_run,
+                    meta.job.next_run,
+                    meta.consecutive_errors,
+                    auto_disabled,
+                    meta.last_status.clone(),
+                )
             } else {
                 return;
             }
         };
         if should_remove {
-            self.jobs.remove(&id);
+            let _ = self.remove_job(id);
+            return;
         }
+        if let Some(ref store) = self.db_store {
+            if let (Some(last_run), Some(status)) = (last_run, status) {
+                if let Err(e) = store.record_outcome(
+                    &id.to_string(),
+                    last_run,
+                    next_run,
+                    &status,
+                    errors,
+                    auto_disabled.then_some(false),
+                ) {
+                    warn!(job_id = %id, error = %e, "Cron outcome DB write failed");
+                }
+            }
+        }
+    }
+
+    /// 与 DB 对账（CARRIER.md §3.4-3：CLI 写开关 vs daemon 内存真源的劈叉
+    /// 收敛）。daemon 每 tick 调：DB 是结构/开关的协调真源——
+    /// - DB 有、内存无 → 采进内存（别的进程建的任务）
+    /// - DB 无、内存有 → 从内存摘除（CLI remove 的行）
+    /// - enabled 不一致 → 采 DB 值（CLI pause/resume 生效，≤一个 tick）
+    ///
+    /// 在飞轮（running）不动：暂停语义 = 当前这轮跑完，下一槽不再触发。
+    /// 返回 (采进, 摘除, 开关变更) 计数。
+    pub fn reconcile_from_db(&self) -> CarrierResult<(usize, usize, usize)> {
+        let Some(ref store) = self.db_store else {
+            return Ok((0, 0, 0));
+        };
+        let db_metas = store.load_all()?;
+
+        let mut added = 0usize;
+        let mut removed = 0usize;
+        let mut toggled = 0usize;
+
+        // DB 无、内存有 → 摘（CLI remove）。
+        let db_ids: std::collections::HashSet<CronJobId> =
+            db_metas.iter().map(|m| m.job.id).collect();
+        let mem_ids: Vec<CronJobId> = self.jobs.iter().map(|r| *r.key()).collect();
+        for id in mem_ids {
+            if !db_ids.contains(&id) {
+                self.jobs.remove(&id);
+                removed += 1;
+            }
+        }
+
+        for db_meta in db_metas {
+            match self.jobs.get_mut(&db_meta.job.id) {
+                Some(mut mem) => {
+                    if mem.value().running.load(Ordering::Acquire) {
+                        continue; // 在飞轮下轮再对
+                    }
+                    if mem.job.enabled != db_meta.job.enabled {
+                        mem.job.enabled = db_meta.job.enabled;
+                        toggled += 1;
+                    }
+                }
+                None => {
+                    self.jobs.insert(db_meta.job.id, db_meta);
+                    added += 1;
+                }
+            }
+        }
+
+        if added + removed + toggled > 0 {
+            info!(added, removed, toggled, "Cron reconciled from database");
+        }
+        Ok((added, removed, toggled))
     }
 }
 

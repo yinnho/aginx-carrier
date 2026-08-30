@@ -1279,6 +1279,13 @@ impl CarrierKernel {
                         break;
                     }
 
+                    // CLI（CARRIER.md §3.4-3 cron pause/resume/remove）与
+                    // 其他进程直写 cron 表；enabled/存在性以 DB 为协调真源，
+                    // 每 tick 对账采进内存。fire 收尾走定点写回，不会冲掉。
+                    if let Err(e) = kernel.cron_scheduler.reconcile_from_db() {
+                        tracing::warn!("Cron reconcile from DB failed: {e}");
+                    }
+
                     let due = kernel.cron_scheduler.due_jobs();
                     for job in due {
                         let job_id = job.id;

@@ -5,6 +5,7 @@
 
 mod acp;
 mod agent_cmd;
+mod cron_cmd;
 mod notify;
 mod probe;
 mod qrlogin;
@@ -33,6 +34,11 @@ enum Command {
     Agent {
         #[command(subcommand)]
         action: AgentAction,
+    },
+    /// 任务面 CLI（CARRIER.md §3.4-3：aclone 的 cron 列表 + 暂停/恢复/删除）
+    Cron {
+        #[command(subcommand)]
+        action: CronAction,
     },
     /// stdio ACP 桥：被 aginx 网关拉起，把分身暴露到 agent:// 网络
     Acp {
@@ -117,6 +123,33 @@ enum TicketAction {
     },
 }
 
+/// 任务面动作（CARRIER.md §3.4-3；创建一期不要求——化身对话里自建）。
+#[derive(Subcommand)]
+enum CronAction {
+    /// 任务列表（JSON Lines 一行一任务：id/name/schedule/next_fire/
+    /// last_result/enabled + agent/one_shot/late）
+    List {
+        /// 只看某化身的任务（缺省 = 全部）
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// 暂停任务（在飞轮跑完，下一槽不再触发）
+    Pause {
+        /// 任务 id（cron list 的 UUID）
+        id: String,
+    },
+    /// 恢复任务（错误计数清零，重算下一槽）
+    Resume {
+        /// 任务 id（cron list 的 UUID）
+        id: String,
+    },
+    /// 删除任务
+    Remove {
+        /// 任务 id（cron list 的 UUID）
+        id: String,
+    },
+}
+
 /// 化身管理动作（CARRIER.md §3.3 下载类形态的 CLI 面）。
 #[derive(Subcommand)]
 enum AgentAction {
@@ -126,7 +159,11 @@ enum AgentAction {
         name: String,
     },
     /// 列出本机化身（本地 + 远程句柄同构合并）
-    List,
+    List {
+        /// 机器可读输出：JSON Lines 一行一化身（CARRIER.md §3.4-1，aclone/脚本用）
+        #[arg(long)]
+        json: bool,
+    },
     /// 卸载化身（杀后台/清 cron/删 workspace/离网）
     Remove {
         /// 本机化身名
@@ -171,6 +208,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Start => start::run()?,
         Command::Agent { action } => agent_cmd::run(action)?,
+        Command::Cron { action } => cron_cmd::run(action)?,
         Command::Acp { clone, session } => acp::run(clone, session)?,
         Command::Probe { url } => probe::run(url)?,
         Command::Notify { text, to } => notify::run(text, to)?,

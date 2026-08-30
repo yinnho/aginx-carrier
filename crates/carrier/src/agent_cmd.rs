@@ -33,8 +33,8 @@ async fn run_async(action: AgentAction) -> anyhow::Result<()> {
     let kernel = carrier_kernel::kernel::CarrierKernel::boot(None)?;
     match action {
         AgentAction::Install { name } => install(&kernel, &name).await,
-        AgentAction::List => {
-            list(&kernel);
+        AgentAction::List { json } => {
+            list(&kernel, json);
             Ok(())
         }
         AgentAction::Remove { name } => remove(&kernel, &name),
@@ -82,10 +82,50 @@ async fn install(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn list(kernel: &CarrierKernel) {
+/// 化身列表（CARRIER.md §3.4-1）。
+///
+/// 人读档（默认）：对齐表格。机器档（`--json`）：JSON Lines 一行一化身，
+/// 字段 `id / name / kind(local|remote) / online / desc`（另有 version/url
+/// 附加信息）——stdout 只放数据行，空列表零行（提示走 stderr），供 aclone
+/// 与脚本消费。`id` = 寻址名（`agent://…/<id>`、`acp --clone <id>`、
+/// `~/.aginx/sessions/<id>.json` 票据约定共用同一键），本地/远程同构。
+/// `online` 一期恒 true：在线 = 可发起对话（acp 按轮 spawn，本就不常驻；
+/// 远程不可达的失败留给对话轮的错误路径暴露）。
+fn list(kernel: &CarrierKernel, json: bool) {
     let mut entries = kernel.registry.list();
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    let remotes = crate::remote::load();
+    let mut remotes = crate::remote::load();
+    remotes.sort_by(|a, b| a.name.cmp(&b.name));
+
+    if json {
+        for e in &entries {
+            let line = serde_json::json!({
+                "id": e.name,
+                "name": if e.manifest.display_name.is_empty() { &e.name } else { &e.manifest.display_name },
+                "kind": "local",
+                "online": true,
+                "desc": e.manifest.description,
+                "version": e.manifest.version,
+            });
+            println!("{}", line);
+        }
+        for r in &remotes {
+            let line = serde_json::json!({
+                "id": r.name,
+                "name": if r.display_name.is_empty() { &r.name } else { &r.display_name },
+                "kind": "remote",
+                "online": true,
+                "desc": "",
+                "url": r.url,
+            });
+            println!("{}", line);
+        }
+        if entries.is_empty() && remotes.is_empty() {
+            eprintln!("（本机还没有化身——`agent install <name>` 从 DupHub 安装；`agent remote add <别名> <agent://地址>` 注册远程化身）");
+        }
+        return;
+    }
+
     if entries.is_empty() && remotes.is_empty() {
         println!(
             "（本机还没有化身——`agent install <name>` 从 DupHub 安装；`agent remote add <别名> <agent://地址>` 注册远程化身）"

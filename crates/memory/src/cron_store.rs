@@ -111,17 +111,23 @@ impl CronJobStore {
         Ok(metas)
     }
 
-    /// Persist all jobs (replaces entire table contents).
+    /// Persist all jobs (replaces entire table contents). 事务包住
+    /// DELETE+重插——中途崩不掉半张表，也让并发 CLI 的定点写不会插进
+    /// 半完成的表重写里。
     pub fn save_all(&self, metas: &[JobMeta]) -> CarrierResult<()> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| CarrierError::Internal(e.to_string()))?;
-        conn.execute("DELETE FROM cron_jobs", [])
+        let tx = conn
+            .transaction()
+            .map_err(|e| CarrierError::Memory(e.to_string()))?;
+        tx.execute("DELETE FROM cron_jobs", [])
             .map_err(|e| CarrierError::Memory(e.to_string()))?;
         for meta in metas {
-            self.insert_meta(&conn, meta)?;
+            Self::insert_meta_tx(&tx, meta)?;
         }
+        tx.commit().map_err(|e| CarrierError::Memory(e.to_string()))?;
         Ok(())
     }
 
@@ -131,21 +137,20 @@ impl CronJobStore {
             .conn
             .lock()
             .map_err(|e| CarrierError::Internal(e.to_string()))?;
-        self.insert_meta(&conn, meta)
+        Self::insert_meta_tx(&conn, meta)
     }
 
-    /// Delete a job by ID.
-    pub fn delete(&self, id: &str) -> CarrierResult<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| CarrierError::Internal(e.to_string()))?;
-        conn.execute("DELETE FROM cron_jobs WHERE id = ?1", rusqlite::params![id])
-            .map_err(|e| CarrierError::Memory(e.to_string()))?;
-        Ok(())
+    /// 整行 upsert（冲突时全列覆盖）——结构性变更（新建/重装）用。
+    fn insert_meta_tx(conn: &Connection, meta: &JobMeta) -> CarrierResult<()> {
+        Self::insert_meta_inner(conn, meta, /* volatile_only */ false)
     }
 
-    fn insert_meta(&self, conn: &Connection, meta: &JobMeta) -> CarrierResult<()> {
+    /// upsert_volatile 的落库体——冲突时只更新易变列。
+    fn insert_meta_volatile(conn: &Connection, meta: &JobMeta) -> CarrierResult<()> {
+        Self::insert_meta_inner(conn, meta, /* volatile_only */ true)
+    }
+
+    fn insert_meta_inner(conn: &Connection, meta: &JobMeta, volatile_only: bool) -> CarrierResult<()> {
         let schedule_json = serde_json::to_string(&meta.job.schedule)
             .map_err(|e| CarrierError::Internal(e.to_string()))?;
         let action_json = serde_json::to_string(&meta.job.action)
@@ -163,14 +168,25 @@ impl CronJobStore {
         let agent_id = meta.job.agent_id.to_string();
         let id = meta.job.id.to_string();
 
-        conn.execute(
+        let conflict_clause = if volatile_only {
+            // 易变列-only：enabled 属于 CLI/主人路径，persist 不越权覆盖。
+            "ON CONFLICT(id) DO UPDATE SET \
+               last_run=?14, next_run=?15, last_status=?11, consecutive_errors=?12"
+        } else {
+            "ON CONFLICT(id) DO UPDATE SET \
+               agent_id=?2, owner_id=?3, sender_id=?4, name=?5, enabled=?6, schedule=?7, action=?8, \
+               delivery=?9, one_shot=?10, last_status=?11, consecutive_errors=?12, \
+               last_run=?14, next_run=?15, chain=?16"
+        };
+        let sql = format!(
             "INSERT INTO cron_jobs (id, agent_id, owner_id, sender_id, name, enabled, schedule, action, delivery, \
                                     one_shot, last_status, consecutive_errors, created_at, last_run, next_run, chain) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
-             ON CONFLICT(id) DO UPDATE SET \
-               agent_id=?2, owner_id=?3, sender_id=?4, name=?5, enabled=?6, schedule=?7, action=?8, \
-               delivery=?9, one_shot=?10, last_status=?11, consecutive_errors=?12, \
-               last_run=?14, next_run=?15, chain=?16",
+             {conflict_clause}"
+        );
+
+        conn.execute(
+            &sql,
             rusqlite::params![
                 id, agent_id, meta.job.owner_id, meta.job.sender_id, meta.job.name,
                 meta.job.enabled as i32, schedule_json, action_json, delivery_json,
@@ -179,6 +195,76 @@ impl CronJobStore {
             ],
         ).map_err(|e| CarrierError::Memory(e.to_string()))?;
         Ok(())
+    }
+
+    /// Delete a job by ID.
+    pub fn delete(&self, id: &str) -> CarrierResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| CarrierError::Internal(e.to_string()))?;
+        conn.execute("DELETE FROM cron_jobs WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| CarrierError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 定点改 enabled（CLI 暂停/恢复路径）。只动这一列——不整行 upsert，
+    /// 否则会把内存里的陈旧字段盖回 DB，吃掉并发 CLI 的编辑。
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> CarrierResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| CarrierError::Internal(e.to_string()))?;
+        conn.execute(
+            "UPDATE cron_jobs SET enabled = ?2 WHERE id = ?1",
+            rusqlite::params![id, enabled as i32],
+        )
+        .map_err(|e| CarrierError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 定点写一轮执行结果（fire 收尾路径）。只动易变列，**不碰
+    /// enabled/name/schedule**——CLI 并发暂停不会被 fire 的写回冲掉。
+    /// `enabled_override` 仅用于连续失败自动停用（Some(false)）。
+    pub fn record_outcome(
+        &self,
+        id: &str,
+        last_run: DateTime<Utc>,
+        next_run: Option<DateTime<Utc>>,
+        last_status: &str,
+        consecutive_errors: u32,
+        enabled_override: Option<bool>,
+    ) -> CarrierResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| CarrierError::Internal(e.to_string()))?;
+        conn.execute(
+            "UPDATE cron_jobs SET last_run = ?2, next_run = ?3, last_status = ?4, \
+                    consecutive_errors = ?5, \
+                    enabled = COALESCE(?6, enabled) \
+             WHERE id = ?1",
+            rusqlite::params![
+                id,
+                last_run.to_rfc3339(),
+                next_run.map(|t| t.to_rfc3339()),
+                last_status,
+                consecutive_errors as i32,
+                enabled_override.map(|b| b as i32),
+            ],
+        )
+        .map_err(|e| CarrierError::Memory(e.to_string()))?;
+        Ok(())
+    }
+
+    /// 周期 persist 用：整行插入，冲突时只更新易变列。新 job（内存有、
+    /// DB 无）落全量；既有行的 enabled 由 CLI/主人路径独占，persist 不越权。
+    pub fn upsert_volatile(&self, meta: &JobMeta) -> CarrierResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| CarrierError::Internal(e.to_string()))?;
+        Self::insert_meta_volatile(&conn, meta)
     }
 }
 
