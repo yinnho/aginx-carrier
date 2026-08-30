@@ -4,11 +4,11 @@
 //! 定位与总纲见 aginx 生态 docs/AGINX-CARRIER-VISION.md。
 
 mod acp;
+mod agent_cmd;
 mod notify;
 mod probe;
 mod qrlogin;
 mod start;
-mod web;
 
 use clap::{Parser, Subcommand};
 
@@ -28,11 +28,10 @@ struct Cli {
 enum Command {
     /// 运行时分身守护进程（个人部署形态）
     Start,
-    /// 桌面形态：carrier 自带 Web UI，浏览器即客户端（ARCHITECTURE §11.3.1）
-    Web {
-        /// 监听地址（默认仅回环；公网暴露走 nginx 反代）
-        #[arg(long, default_value = "127.0.0.1:8703")]
-        listen: String,
+    /// 化身管理 CLI 面（AginxOS 融合后唯一管理入口：供 aterm 启动器/脚本调用）
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
     },
     /// stdio ACP 桥：被 aginx 网关拉起，把分身暴露到 agent:// 网络
     Acp {
@@ -117,11 +116,33 @@ enum TicketAction {
     },
 }
 
+/// 化身管理动作（CARRIER.md §3.3 下载类形态的 CLI 面）。
+#[derive(Subcommand)]
+enum AgentAction {
+    /// 从 DupHub 安装化身（已存在则重装，.dup/ 历史保留）
+    Install {
+        /// DupHub 上的化身名
+        name: String,
+    },
+    /// 列出本机化身
+    List,
+    /// 卸载化身（杀后台/清 cron/删 workspace/离网）
+    Remove {
+        /// 本机化身名
+        name: String,
+    },
+    /// 更新化身（Hub 最新版本 ≠ 本地版本才重装）
+    Update {
+        /// 本��化身名
+        name: String,
+    },
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Start => start::run()?,
-        Command::Web { listen } => web::run(listen)?,
+        Command::Agent { action } => agent_cmd::run(action)?,
         Command::Acp { clone, session } => acp::run(clone, session)?,
         Command::Probe { url } => probe::run(url)?,
         Command::Notify { text, to } => notify::run(text, to)?,

@@ -439,13 +439,13 @@ dependencies = [
  "anyhow",
  "base64",
  "carrier-clone",
+ "carrier-gateway",
  "carrier-ilink",
  "carrier-kernel",
  "carrier-memory",
  "carrier-runtime",
  "carrier-types",
  "carrier-webhook",
- "carrier-webui",
  "clap",
  "dirs",
  "qrcode",
@@ -466,6 +466,7 @@ dependencies = [
  "carrier-types",
  "chrono",
  "flate2",
+ "futures",
  "reqwest",
  "serde",
  "serde_json",
@@ -677,30 +678,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "carrier-webui"
-version = "0.1.0"
-dependencies = [
- "axum",
- "carrier-clone",
- "carrier-gateway",
- "carrier-kernel",
- "carrier-runtime",
- "carrier-types",
- "dirs",
- "futures",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "toml 0.8.23",
- "tracing",
- "webpki-roots",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/gateway", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook", "crates/webui"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/gateway", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook"]
 
 [workspace.package]
 version = "0.1.0"
@@ -80,8 +80,7 @@ carrier-runtime = { path = "crates/runtime" }
 carrier-kernel = { path = "crates/kernel" }
 carrier-ilink = { path = "crates/ilink" }
 carrier-webhook = { path = "crates/webhook" }
-carrier-webui = { path = "crates/webui" }
-# webui agent:// 客户端（第三刀：经网关路由外部 CLI 工具），版本对齐 agc
+# agent:// 客户端所在 crate（经网关路由外部 CLI 工具），版本对齐 agc
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pki-types = "1"

@@ -18,3 +18,4 @@ flate2 = "1"
 tar = "0.4"
 reqwest = { workspace = true }
 urlencoding = "2"
+futures = { workspace = true }

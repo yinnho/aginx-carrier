@@ -1,8 +1,8 @@
 //! 组装接线：kernel boot + iLink 通道。
 //!
 //! 从 opencarrier `api::server::run_daemon` 的通道段抽取的 iLink 子集，
-//! `aginx-carrier start`（守护形态）与桌面形态（crates/desktop 内嵌运行时）
-//! 共用——同一套身体，不同的宿主。
+//! `aginx-carrier start`（守护形态）使用。webui 已退役（2026-08-30
+//! AginxOS 融合）；一次性 CLI（agent 子命令）走裸 boot 不进这里。
 
 use std::sync::Arc;
 
@@ -182,6 +182,32 @@ pub fn sync_aginx_registrations(kernel: &Arc<CarrierKernel>) {
         ) {
             Ok(()) => tracing::info!(agent = %entry.name, "aginx registration reconciled"),
             Err(e) => tracing::warn!(agent = %entry.name, error = %e, "aginx registration failed"),
+        }
+    }
+}
+
+/// 首启兜底：`~/.aginx/carrier/brain.json` 不存在则写骨架——kernel boot 硬
+/// 要求 brain 可加载；base_url 为空时由宿主（AginxOS 设置面）引导补齐。
+/// 从 web.rs 收编（web 子命令退役，2026-08-30）。
+pub fn seed_brain_skeleton_if_missing() {
+    let path = carrier_types::config::home_dir().join("brain.json");
+    if path.exists() {
+        return;
+    }
+    let skeleton = serde_json::json!({
+        "base_url": "",
+        "api_key_env": "AGINXBRAIN_API_KEY",
+        "default_modality": "chat",
+        "modalities": { "chat": { "description": "默认对话" } }
+    });
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&path, serde_json::to_string_pretty(&skeleton).unwrap_or_default()) {
+        Ok(()) => info!(path = %path.display(), "已写入 brain.json 骨架（待配置 brain）"),
+        Err(e) => {
+            // boot 会再报一次更具体的错，这里只提示来源
+            eprintln!("brain.json 骨架写入失败（{e}）；若已有配置可忽略");
         }
     }
 }

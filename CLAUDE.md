@@ -11,11 +11,11 @@
 
 ## 约定
 
-- **crate 命名**：`carrier-*`（carrier-types / carrier-memory / carrier-runtime / carrier-kernel / carrier-lifecycle / carrier-clone / carrier-ilink / carrier-webhook），bin 叫 `aginx-carrier`
+- **crate 命名**：`carrier-*`（carrier-types / carrier-memory / carrier-runtime / carrier-kernel / carrier-lifecycle / carrier-clone / carrier-ilink / carrier-webhook / carrier-gateway），bin 叫 `aginx-carrier`
 - **配置/数据目录**：`~/.aginx/carrier/`
 - **git 历史**：纯 cp 不带历史，opencarrier 仓库是档案（历史在那里查）
 - **通道范围**：入站两条——iLink（人→agent）+ webhook（机器→agent，`carrier-webhook`，daemon `start` 专属 HTTP 监听，默认关、移动端不起）；weixin-oa/企微kf 后置
-- **桌面形态**：`aginx-carrier web`（`carrier-webui`）——carrier 自带 loopback HTTP 面 serve 内嵌 SPA，浏览器即客户端（ARCHITECTURE §11.3.1）；SSE 流式走 `send_message_streaming`，设置页写 brain.json（`update_brain`）+ `.env`
+- **AginxOS 融合（2026-08-30 定调）**：全力配合 AginxOS（智能体手机），化身即 app、carrier 是化身 runtime（需求文档 `~/Documents/aginxos/docs/CARRIER.md`）。**webui/`web` 子命令已退役**——浏览器面不再有；化身管理走 CLI：`aginx-carrier agent install|list|remove|update`（市场机制在 `carrier-clone::market`，UI 无关层）。用户可见文案用「化身」，内部代码 clone 不改名
 
 ## Build & Verify Workflow
 
