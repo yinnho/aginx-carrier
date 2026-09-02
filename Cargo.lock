@@ -47,6 +47,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "agf"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "carrier-types",
+ "clap",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
