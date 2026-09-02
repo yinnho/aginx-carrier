@@ -43,6 +43,11 @@ async fn run_async(action: AgentAction) -> anyhow::Result<()> {
         }
         AgentAction::Remove { name } => remove(&kernel, &name),
         AgentAction::Update { name } => update(&kernel, &name).await,
+        AgentAction::Send { agent, message, sender } => {
+            send(&kernel, &agent, &message, &sender).await
+        }
+        AgentAction::Kill { agent } => kill(&kernel, &agent),
+        AgentAction::Restart { agent } => restart(&kernel, &agent),
         AgentAction::Remote { .. } => unreachable!("Remote 已在 boot 前分派"),
     }
 }
@@ -202,8 +207,7 @@ fn list(kernel: &CarrierKernel, json: bool) {
     }
 }
 
-fn remove(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {
-    let entry = kernel
+fn remove(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {    let entry = kernel
         .registry
         .find_by_name(name)
         .ok_or_else(|| anyhow::anyhow!("本机没有叫 {name} 的化身"))?;
@@ -216,6 +220,54 @@ fn remove(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {
     }
     println!("已卸载 {name}（workspace 已删除，已离网）");
     daemon_restart_hint();
+    Ok(())
+}
+
+/// 给化身发消息并收回答复（M33）。内联跑一轮（acp 每 prompt 一进程的同款
+/// 形态——裸 boot 的 kernel 一样能 send）。递归护栏跨进程续传：读
+/// AGINX_AGENT_DEPTH（桥传 depth+1），以其为深度 scope 本轮。
+/// UFCS 调 trait 版——具体 kernel 的同名固有方法签名不同。
+async fn send(kernel: &CarrierKernel, agent: &str, message: &str, sender: &str) -> anyhow::Result<()> {
+    use carrier_runtime::kernel_handle::KernelHandle;
+
+    println!("发给 {agent} …（内联跑一轮，答复即回）");
+    let depth: u32 = std::env::var("AGINX_AGENT_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let reply = carrier_runtime::tool_runner::scope_agent_call_depth(depth, async {
+        KernelHandle::send_to_agent(kernel, agent, message, Some(sender), None, None, None, None)
+            .await
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{reply}");
+    Ok(())
+}
+
+/// 强杀化身（注册表保留——不是卸载；与 agent_kill 工具同源）。
+fn kill(kernel: &CarrierKernel, agent: &str) -> anyhow::Result<()> {
+    use carrier_runtime::kernel_handle::KernelHandle;
+
+    let (id, _) = kernel
+        .registry
+        .resolve(agent)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    KernelHandle::kill_agent(kernel, &id.to_string())?;
+    println!("已强杀 {agent}（{id}；后台/调度/能力/事件已清，注册表保留）");
+    Ok(())
+}
+
+/// 重启化身（取消在跑任务、状态回 Running）。
+fn restart(kernel: &CarrierKernel, agent: &str) -> anyhow::Result<()> {
+    use carrier_runtime::kernel_handle::KernelHandle;
+
+    let (id, _) = kernel
+        .registry
+        .resolve(agent)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    KernelHandle::restart_agent(kernel, &id.to_string())?;
+    println!("已重启 {agent}（{id}）");
     Ok(())
 }
 

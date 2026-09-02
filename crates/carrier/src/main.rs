@@ -11,6 +11,8 @@ mod probe;
 mod qrlogin;
 mod remote;
 mod start;
+mod sys_cmd;
+mod tool_cmd;
 
 use std::path::PathBuf;
 
@@ -50,6 +52,17 @@ enum Command {
         /// 续接会话 id（网关 `${SESSION_ID}` 注入；缺省 = 新会话并铸造 id）
         #[arg(long)]
         session: Option<String>,
+    },
+    /// 系统杂项面（M33：location/time——自 runtime misc 搬来，不 boot kernel）
+    Sys {
+        #[command(subcommand)]
+        action: sys_cmd::SysAction,
+    },
+    /// 机读面（M33 D3 批3）：stdin JSON（入参+_ctx）→ stdout D1 信封。
+    /// runtime 桥 spawn 此面执行内核耦合工具（schedule/cron/agent_*/sys）。
+    Tool {
+        /// 工具名（tool_cmd::TOOL_NAMES）
+        name: String,
     },
     /// 显示版本与本地数据目录等信息
     Info,
@@ -150,6 +163,18 @@ enum CronAction {
         /// 任务 id（cron list 的 UUID）
         id: String,
     },
+    /// 创建任务（M33：打破"创建不走 CLI"一期限制）。任务 JSON 从 stdin 或
+    /// --json 读（{name, schedule:{kind:at|every|cron,...}, action:{kind:
+    /// system_event|agent_turn|...}, one_shot?...}）；落 DB 后常驻 daemon
+    /// ≤15s reconcile 采进。
+    Create {
+        /// 归属化身（名或 UUID）
+        #[arg(long)]
+        agent: String,
+        /// 任务 JSON（缺省读 stdin）
+        #[arg(long)]
+        json: Option<String>,
+    },
 }
 
 /// 化身管理动作（CARRIER.md §3.3 下载类形态的 CLI 面）。
@@ -183,6 +208,27 @@ enum AgentAction {
     Update {
         /// 本机化身名
         name: String,
+    },
+    /// 给化身发一条消息并收回答复（内联跑一轮；机读面 tool agent_send 同源）
+    Send {
+        /// 目标化身（名或 UUID）
+        agent: String,
+        /// 消息正文
+        #[arg(long)]
+        message: String,
+        /// 发送者标识（缺省 = cli）
+        #[arg(long, default_value = "cli")]
+        sender: String,
+    },
+    /// 强杀化身（取消在跑任务、清后台/调度/能力/事件；注册表保留）
+    Kill {
+        /// 目标化身（名或 UUID）
+        agent: String,
+    },
+    /// 重启化身（取消在跑任务、状态回 Running——改配置后生效用）
+    Restart {
+        /// 目标化身（名或 UUID）
+        agent: String,
     },
     /// 远程化身句柄：注册别人网关上的分身，列表与对话同构（CARRIER.md §3.3 远程类）
     Remote {
@@ -220,6 +266,8 @@ fn main() -> anyhow::Result<()> {
         Command::Agent { action } => agent_cmd::run(action)?,
         Command::Cron { action } => cron_cmd::run(action)?,
         Command::Acp { clone, session } => acp::run(clone, session)?,
+        Command::Sys { action } => sys_cmd::run(action)?,
+        Command::Tool { name } => tool_cmd::run(name)?,
         Command::Probe { url } => probe::run(url)?,
         Command::Notify { text, to } => notify::run(text, to)?,
         Command::QrLogin { bot_id, bind_agent } => {

@@ -18,6 +18,28 @@ tokio::task_local! {
 /// Maximum inter-agent call depth (used by agent tools).
 pub(crate) const MAX_AGENT_CALL_DEPTH: u32 = 5;
 
+/// Current inter-agent call depth of this task (0 outside an agent turn) —
+/// pub wrapper for the carrier CLI `tool` face (M33): the bridge reads it
+/// before spawning the child so the guard survives the process boundary.
+pub fn current_agent_call_depth() -> u32 {
+    AGENT_CALL_DEPTH.try_with(|d| d.get()).unwrap_or(0)
+}
+
+/// Run `fut` with the inter-agent call depth set to `depth` — pub wrapper
+/// used by the carrier CLI `agent send`/`tool agent_send` face to seed the
+/// depth it received via `AGINX_AGENT_DEPTH` env (bridge passes depth+1).
+pub fn scope_agent_call_depth<F: std::future::Future>(
+    depth: u32,
+    fut: F,
+) -> impl std::future::Future<Output = F::Output> {
+    AGENT_CALL_DEPTH.scope(std::cell::Cell::new(depth), fut)
+}
+
+/// Max inter-agent call depth as a pub constant (CLI-side guard parity).
+pub fn max_agent_call_depth() -> u32 {
+    MAX_AGENT_CALL_DEPTH
+}
+
 /// Strip a toolset prefix ("filesystem__shell_exec" → "shell_exec") for
 /// base-name comparison in the flow `tools:` hard sandbox.
 pub(crate) fn base_tool_name(n: &str) -> &str {

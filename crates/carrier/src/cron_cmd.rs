@@ -1,7 +1,7 @@
 //! `aginx-carrier cron` — 任务面 CLI（CARRIER.md §3.4-3）。
 //!
-//! aclone（AginxOS 薄壳 TUI）与脚本经此看任务、开关任务。创建不走 CLI
-//! （一期）：化身在对话里用 cron_create 自建（链式流水线同理）。
+//! aclone（AginxOS 薄壳 TUI）与脚本经此看任务、开关任务、创建任务（M33 起
+//! 打破一期限制——cron create 与化身对话里的 cron_create 同一 kernel 正规管线）。
 //!
 //! **列表** = D1 信封一条（`{ok,data,meta}`，M25 归一），data 一元素一
 //! 任务，字段 `id / name / schedule / next_fire / last_result / enabled`
@@ -20,6 +20,7 @@
 //! daemon 每 tick（15s）`reconcile_from_db` 把 DB 的 enabled/���在性采进
 //! 内存。暂停语义 = 在飞轮跑完、下一槽不再触发（不杀正在执行的轮）。
 
+use std::io::Read;
 use std::str::FromStr;
 
 use carrier_kernel::kernel::CarrierKernel;
@@ -47,7 +48,33 @@ async fn run_async(action: CronAction) -> anyhow::Result<()> {
         CronAction::Pause { id } => toggle(&kernel, &id, false),
         CronAction::Resume { id } => toggle(&kernel, &id, true),
         CronAction::Remove { id } => remove(&kernel, &id),
+        CronAction::Create { agent, json } => create(&kernel, &agent, json.as_deref()).await,
     }
+}
+
+/// 创建任务（M33：打破"创建不走 CLI"一期限制）。任务 JSON 同 cron_create
+/// 工具入参（{name, schedule, action, one_shot?, chain?}）；走 kernel 同一
+/// 正规管线落 DB，常驻 daemon ≤15s reconcile 采进——DB 即 daemon 总线。
+async fn create(kernel: &CarrierKernel, agent: &str, json: Option<&str>) -> anyhow::Result<()> {
+    let raw = match json {
+        Some(s) => s.to_string(),
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+    };
+    let job: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("任务 JSON 不合法: {e}\n（形态见 cron_create 工具 schema：name + schedule{{kind:at|every|cron,...}} + action{{kind:system_event|agent_turn|push|...}}）"))?;
+    // UFCS 调 trait 版（kernel 固有面无 cron_create）。
+    let out = carrier_runtime::kernel_handle::KernelHandle::cron_create(
+        kernel, agent, None, None, job,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{out}");
+    println!("（已落 DB；常驻 daemon ≤15s 采进开始触发。`cron list --agent {agent}` 可查）");
+    Ok(())
 }
 
 /// agent_id → 化身名（CLI 消费面用名字；查不到退回 id 串）。

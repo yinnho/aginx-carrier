@@ -26,6 +26,8 @@ clap.workspace = true
 dirs = "6"
 carrier-kernel = { workspace = true }
 carrier-clone = { workspace = true }
+reqwest.workspace = true
+chrono.workspace = true
 base64 = { workspace = true }
 carrier-types = { workspace = true }
 carrier-runtime = { workspace = true }
