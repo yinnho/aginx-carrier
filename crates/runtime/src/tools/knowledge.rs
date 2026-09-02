@@ -423,7 +423,7 @@ async fn tool_apply_patch(
             }
             if let (Some(hd), Some(sid), Some(an)) = (ctx.home_dir, ctx.sender_id, ctx.agent_name) {
                 if let Some(res) =
-                    super::filesystem::resolve_user_data_path(p, hd, sid, ctx.owner_id, an)
+                    super::agf_bridge::resolve_user_data_path(p, hd, sid, ctx.owner_id, an)
                 {
                     *p = res?.to_string_lossy().into_owned();
                 }

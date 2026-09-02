@@ -5,13 +5,13 @@
 
 pub mod a2a;
 pub mod agb_bridge;
+pub mod agf_bridge;
 pub mod agent;
 pub mod agent_mgmt;
 pub mod automation;
 pub mod collaboration;
 pub mod data_analyze;
 pub mod document;
-pub mod filesystem;
 pub mod gateway_hub;
 pub mod knowledge;
 pub mod kv;
@@ -35,6 +35,9 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 // AginBrowser 客户端 helpers 已随实现整体搬进 `agb` CLI（M31 D3 批1）。
 // 工具面见 agb_bridge.rs；配置键仍是 AGINXBROWSER_URL（~/.aginx/carrier/.env）。
+//
+// 文件面工具（file_* + image_analyze）已随实现整体搬进 `agf` CLI
+// （M32 D3 批2）。工具面见 agf_bridge.rs；路径解析/沙箱留在桥内。
 // ---------------------------------------------------------------------------
 
 /// A category of related tools.
@@ -77,7 +80,7 @@ pub fn builtin_modules(
     cli_exec_config: carrier_types::config::CliExecConfig,
 ) -> Vec<Box<dyn ToolModule>> {
     let mut modules: Vec<Box<dyn ToolModule>> = vec![
-        Box::new(filesystem::FilesystemTools),
+        Box::new(agf_bridge::AgfBridge),
         Box::new(document::DocumentTools),
         Box::new(sqlite::SqliteTools),
         Box::new(shell::ShellTools),
