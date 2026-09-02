@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "carrier"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-clone"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "rustls",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-ilink"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "base64",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-lifecycle"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "carrier-clone",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "carrier-types",
  "chrono",
@@ -591,7 +591,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-types"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-uniffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "carrier",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "carrier-webhook"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1253,6 +1253,26 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dup"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "clap",
+ "dirs",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "ed25519"

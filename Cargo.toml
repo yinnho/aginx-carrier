@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/gateway", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook"]
+members = ["crates/carrier", "crates/types", "crates/memory", "crates/clone", "crates/dup", "crates/gateway", "crates/lifecycle", "crates/runtime", "crates/kernel", "crates/ilink", "crates/uniffi", "crates/webhook"]
 
 [workspace.package]
 version = "0.2.0"
