@@ -134,6 +134,13 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
+    // CLI 人面常接 `| head`：Rust 默认忽略 SIGPIPE，写已关闭管道会以
+    // "failed printing to stdout: Broken pipe" panic 收场（设备实测）。
+    // 恢复默认处置 = 安静地死于 SIGPIPE，与普通 CLI 一致。桥路径不受
+    // 影响（runtime 全量消费 stdout）。
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     // 与 kernel 同一份 .env 加载（AGINXBROWSER_URL 等优先级一致）
     carrier_types::dotenv::load_dotenv();
     let cli = Cli::parse();

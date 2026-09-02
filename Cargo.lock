@@ -37,6 +37,7 @@ dependencies = [
  "clap",
  "dashmap",
  "hex",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
