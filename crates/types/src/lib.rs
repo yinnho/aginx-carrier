@@ -12,6 +12,7 @@ pub mod channel;
 pub mod config;
 pub mod content;
 pub mod env;
+pub mod dotenv;
 pub mod error;
 pub mod event;
 pub mod flow;

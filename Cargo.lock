@@ -29,6 +29,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "agb"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "carrier-types",
+ "clap",
+ "dashmap",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -593,6 +610,7 @@ dependencies = [
 name = "carrier-runtime"
 version = "0.2.0"
 dependencies = [
+ "agb",
  "async-trait",
  "base64",
  "bytes",

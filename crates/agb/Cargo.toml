@@ -1,0 +1,32 @@
+[package]
+name = "agb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "agb - AginxBrowser client CLI (browser/search/fetch, D3 批1 无状态 HTTP 工具外置成包)"
+
+# agb（M31 D3 批1）— browser_* / web_search / web_fetch 三组无状态 HTTP
+# 工具的实现从 carrier-runtime 搬出的单真源：runtime 只留薄桥
+#（同名 ToolDefinition + spawn `agb tool <name>`），本 CLI 既有给人/流程
+# 脚本用的子命令面，也有 `tool <name>` 机读面（stdin JSON → D1 信封）。
+# 引擎层（SSRF/taint/风控路由/HTML→Markdown）随代码整体搬家。
+[[bin]]
+name = "agb"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+carrier-types.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+dashmap.workspace = true
+hex.workspace = true
+tokio.workspace = true
+tracing.workspace = true

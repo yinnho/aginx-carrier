@@ -6,6 +6,7 @@ license.workspace = true
 description = "Agent runtime and execution environment for aginx-carrier"
 
 [dependencies]
+agb = { path = "../agb" }
 carrier-types = { path = "../types" }
 carrier-clone = { path = "../clone" }
 carrier-gateway = { path = "../gateway" }
