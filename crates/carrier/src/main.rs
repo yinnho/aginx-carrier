@@ -126,8 +126,8 @@ enum TicketAction {
 /// 任务面动作（CARRIER.md §3.4-3；创建一期不要求——化身对话里自建）。
 #[derive(Subcommand)]
 enum CronAction {
-    /// 任务列表（JSON Lines 一行一任务：id/name/schedule/next_fire/
-    /// last_result/enabled + agent/one_shot/late）
+    /// 任务列表（D1 信封一条：data 一元素一任务 id/name/schedule/
+    /// next_fire/last_result/enabled + agent/one_shot/late）
     List {
         /// 只看某化身的任务（缺省 = 全部）
         #[arg(long)]
@@ -160,7 +160,7 @@ enum AgentAction {
     },
     /// 列出本机化身（本地 + 远程句柄同构合并）
     List {
-        /// 机器可读输出：JSON Lines 一行一化身（CARRIER.md §3.4-1，aclone/脚本用）
+        /// 机器可读输出：D1 信封一条（{ok,data,meta}，CARRIER.md §3.4-1）
         #[arg(long)]
         json: bool,
     },

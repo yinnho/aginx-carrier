@@ -3,9 +3,10 @@
 //! aclone（AginxOS 薄壳 TUI）与脚本经此看任务、开关任务。创建不走 CLI
 //! （一期）：化身在对话里用 cron_create 自建（链式流水线同理）。
 //!
-//! **列表** = JSON Lines 一行一任务，字段 `id / name / schedule /
-//! next_fire / last_result / enabled`（另有 agent / one_shot / late）。
-//! stdout 只放数据行，空列表零行；schedule 三形态 at/every/cron 原样
+//! **列表** = D1 信封一条（`{ok,data,meta}`，M25 归一），data 一元素一
+//! 任务，字段 `id / name / schedule / next_fire / last_result / enabled`
+//!（另有 agent / one_shot / late），meta 带 count。stdout 只放信封，空列表
+//! data=[]（提示走 stderr）；schedule 三形态 at/every/cron 原样
 //! 序列化（`{"kind":"every","every_secs":600}`）。
 //!
 //! **离线语义（立法）**：手机是会关机的节点。开机/daemon 重启后，
@@ -73,6 +74,7 @@ fn list(kernel: &CarrierKernel, agent_filter: Option<&str>) {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(i64::MAX);
     let mut printed = 0usize;
+    let mut recs = Vec::new();
     for meta in metas {
         let job = &meta.job;
         let agent_name = names
@@ -86,7 +88,7 @@ fn list(kernel: &CarrierKernel, agent_filter: Option<&str>) {
         }
         // late = 应跑未跑（daemon 停机/在飞阻塞/关机刚回来的补跑前一刻）。
         let late = job.enabled && job.next_run.map(|t| t.timestamp() < now_secs).unwrap_or(false);
-        let line = serde_json::json!({
+        recs.push(serde_json::json!({
             "id": job.id.to_string(),
             "name": job.name,
             "schedule": job.schedule,
@@ -96,13 +98,20 @@ fn list(kernel: &CarrierKernel, agent_filter: Option<&str>) {
             "agent": agent_name,
             "one_shot": meta.one_shot,
             "late": late,
-        });
-        println!("{}", line);
+        }));
         printed += 1;
     }
     if printed == 0 {
         eprintln!("（没有任务——化身在对话里用 cron_create 自建；`cron list --agent <名>` 过滤）");
     }
+    // D1 信封（M25 归一）：stdout 一条，data 一元素一任务。
+    println!(
+        "{}",
+        aginx_carrier::envelope::ok_meta(
+            serde_json::Value::Array(recs),
+            serde_json::json!({"count": printed}),
+        )
+    );
 }
 
 fn toggle(kernel: &CarrierKernel, id: &str, enabled: bool) -> anyhow::Result<()> {
