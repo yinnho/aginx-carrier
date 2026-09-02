@@ -865,13 +865,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_tools_without_kernel() {
+        // M33：agent_* 走 carrier 桥——无内核态可报错，执行经
+        // `aginx-carrier tool` 子进程。host 测试机 PATH 无该 CLI →
+        // 干净报错（bridge 不门广播，只门执行）。
         let result =
             execute_tool("test-id", "agent_list", &serde_json::json!({}), &noop_ctx()).await;
         assert!(result.is_error, "expected error, got: {}", result.content);
         assert!(
-            result.content.contains("Kernel handle not available")
-                || result.content.contains("memory"),
-            "expected kernel/memory error, got: {}",
+            result.content.contains("aginx-carrier")
+                || result.content.contains("Kernel handle not available"),
+            "expected bridge/CLI error, got: {}",
             result.content
         );
     }
@@ -935,6 +938,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_schedule_tools_without_kernel() {
+        // M33：schedule_* 走 carrier 桥（同 test_agent_tools_without_kernel）。
         let result = execute_tool(
             "test-id",
             "schedule_list",
@@ -944,8 +948,10 @@ mod tests {
         .await;
         assert!(result.is_error, "expected error, got: {}", result.content);
         assert!(
-            result.content.contains("memory") || result.content.contains("Kernel"),
-            "expected memory/kernel error, got: {}",
+            result.content.contains("aginx-carrier")
+                || result.content.contains("memory")
+                || result.content.contains("Kernel"),
+            "expected bridge/CLI error, got: {}",
             result.content
         );
     }

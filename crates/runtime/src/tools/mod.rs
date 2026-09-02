@@ -6,8 +6,8 @@
 pub mod a2a;
 pub mod agb_bridge;
 pub mod agf_bridge;
+pub mod carrier_bridge;
 pub mod agent;
-pub mod agent_mgmt;
 pub mod automation;
 pub mod collaboration;
 pub mod data_analyze;
@@ -17,8 +17,6 @@ pub mod knowledge;
 pub mod kv;
 pub mod media;
 pub mod memory;
-pub mod misc;
-pub mod scheduling;
 pub mod shell;
 pub mod sqlite;
 pub mod training;
@@ -81,19 +79,17 @@ pub fn builtin_modules(
 ) -> Vec<Box<dyn ToolModule>> {
     let mut modules: Vec<Box<dyn ToolModule>> = vec![
         Box::new(agf_bridge::AgfBridge),
+        Box::new(carrier_bridge::CarrierBridge),
         Box::new(document::DocumentTools),
         Box::new(sqlite::SqliteTools),
         Box::new(shell::ShellTools),
         Box::new(agb_bridge::AgbBridge),
-        Box::new(misc::MiscTools),
         Box::new(knowledge::KnowledgeTools),
         Box::new(kv::KvTools),
         Box::new(media::MediaTools),
         Box::new(memory::MemoryTools),
         Box::new(agent::DelegationTools),
-        Box::new(agent_mgmt::AgentMgmtTools),
         Box::new(training::TrainingTools),
-        Box::new(scheduling::SchedulingTools),
         Box::new(collaboration::CollaborationTools),
         Box::new(automation::AutomationRulesTools),
         Box::new(a2a::A2aTools),
