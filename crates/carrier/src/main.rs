@@ -12,6 +12,8 @@ mod qrlogin;
 mod remote;
 mod start;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -153,10 +155,18 @@ enum CronAction {
 /// 化身管理动作（CARRIER.md §3.3 下载类形态的 CLI 面）。
 #[derive(Subcommand)]
 enum AgentAction {
-    /// 从 DupHub 安装化身（已存在则重装，.dup/ 历史保留）
+    /// 安装化身：默认从 DupHub 拉取；--file 从本地 tar 装（AginxOS 手机
+    /// 形态，duphub auth 等 M36 sidecar 前的离线路径）。已存在则重装，
+    /// .dup/ 历史保留。
     Install {
-        /// DupHub 上的化身名
+        /// 化身名（DupHub 名，或 --file 时的本地命名）
         name: String,
+        /// 本地包路径：分身定义层平铺 tar（.tar/.tar.gz，与 dup 工作区同构）
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// 预检不安装：跑安装格式硬闸 + 列出 flows 与 shell 权限预览
+        #[arg(long)]
+        dry_run: bool,
     },
     /// 列出本机化身（本地 + 远程句柄同构合并）
     List {

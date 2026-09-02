@@ -6,6 +6,8 @@
 //! 钩子），更新语义 = 定义版本 diff（DupHub latest_version 对比本地
 //! template.json version，落后才重装，`.dup/` 历史保留）。
 
+use std::path::Path;
+
 use carrier_kernel::kernel::CarrierKernel;
 
 use crate::AgentAction;
@@ -32,7 +34,9 @@ async fn run_async(action: AgentAction) -> anyhow::Result<()> {
     // 卸载打成 "Directory not empty"。装/卸/查都不需要常驻循环。
     let kernel = carrier_kernel::kernel::CarrierKernel::boot(None)?;
     match action {
-        AgentAction::Install { name } => install(&kernel, &name).await,
+        AgentAction::Install { name, file, dry_run } => {
+            install(&kernel, &name, file.as_deref(), dry_run).await
+        }
         AgentAction::List { json } => {
             list(&kernel, json);
             Ok(())
@@ -55,22 +59,59 @@ fn daemon_restart_hint() {
     println!("提示：若 `aginx-carrier start` 守护进程正在运行，重启后它才能看到变化。");
 }
 
-async fn install(kernel: &CarrierKernel, name: &str) -> anyhow::Result<()> {
+/// 安装化身。源两种：默认 DupHub 拉取；`--file` 本地 tar（AginxOS 离线
+/// 路径，tar_source 读成 files map 后走同一条正规管线）。`--dry-run`
+/// 跑安装格式硬闸 + 权限预览，不落盘不 spawn。
+async fn install(
+    kernel: &CarrierKernel,
+    name: &str,
+    file: Option<&Path>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
     if !carrier_clone::market::valid_clone_name(name) {
         anyhow::bail!("化身名只允许小写字母、数字与连字符（1-64 位）");
     }
     if crate::remote::find(name).is_some() {
         anyhow::bail!("{name} 已是远程化身句柄——先 `agent remote remove {name}` 再安装本地化身");
     }
-    let hub_cfg = kernel.config.hub.clone();
-    let key = read_key(&hub_cfg.api_key_env)?;
     let existed = kernel.registry.find_by_name(name).is_some();
 
-    println!("从 DupHub（{}）拉取化身 {name} …", hub_cfg.url);
-    let files = carrier_clone::market::fetch_install_files(&hub_cfg.url, &key, name)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("已拉取 {} 个文件，安装中 …", files.len());
+    let files = if let Some(path) = file {
+        println!("从本地包 {} 读取化身 {name} …", path.display());
+        carrier_clone::tar_source::read_clone_tar(path)?
+    } else {
+        let hub_cfg = kernel.config.hub.clone();
+        let key = read_key(&hub_cfg.api_key_env)?;
+        println!("从 DupHub（{}）拉取化身 {name} …", hub_cfg.url);
+        let files = carrier_clone::market::fetch_install_files(&hub_cfg.url, &key, name)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        println!("已拉取 {} 个文件，安装中 …", files.len());
+        files
+    };
+
+    if dry_run {
+        let errors = carrier_clone::manifest::validate_install_format(&files)?;
+        if !errors.is_empty() {
+            for e in &errors {
+                eprintln!("  ✗ {e}");
+            }
+            anyhow::bail!("预检未通过（{} 个问题）——未安装", errors.len());
+        }
+        let preview = carrier_clone::manifest::install_preview(&files);
+        println!("预检通过：{} 个文件，{} 个 flow，shell 权限如下（--dry-run，未安装）",
+            preview.file_count, preview.flows.len());
+        for f in &preview.flows {
+            println!("  {} — {}", f.path, f.name);
+            println!("    描述：{}", f.description);
+            if f.shell_allow.is_empty() {
+                println!("    shell 权限：（无）");
+            } else {
+                println!("    shell 权限：{}", f.shell_allow.join("、"));
+            }
+        }
+        return Ok(());
+    }
 
     let (id, agent_name, display_name) = kernel.clone_install_files(name, files).await?;
     if existed {

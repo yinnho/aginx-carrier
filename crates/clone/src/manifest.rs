@@ -304,6 +304,47 @@ fn extract_frontmatter_description(content: &str) -> Option<String> {
     None
 }
 
+/// 安装预览（M30 权限预览）：一批安装文件将带来的 flows 与 shell 权限。
+/// 只读不改；`agent install --dry-run` 消费。与 validate_install_format
+/// 同源走 `parse_flow_def`，保证预览说的就是安装闸门看的。
+pub struct InstallPreview {
+    pub file_count: usize,
+    pub flows: Vec<FlowPreview>,
+}
+
+pub struct FlowPreview {
+    pub path: String,
+    pub name: String,
+    pub description: String,
+    pub shell_allow: Vec<String>,
+}
+
+pub fn install_preview(files: &BTreeMap<String, Vec<u8>>) -> InstallPreview {
+    let mut flows = Vec::new();
+    for (rel, content) in files {
+        let segs: Vec<&str> = rel.split('/').collect();
+        if segs.len() >= 3 && segs[0] == "flows" {
+            let fname = segs.last().copied().unwrap_or_default();
+            if fname == "flow.md" {
+                let text = String::from_utf8_lossy(content);
+                let def = carrier_types::flow::parse_flow_def(&text);
+                flows.push(FlowPreview {
+                    path: rel.clone(),
+                    name: if def.name.is_empty() {
+                        segs[segs.len() - 2].to_string()
+                    } else {
+                        def.name
+                    },
+                    description: def.description,
+                    shell_allow: def.shell_allow,
+                });
+            }
+        }
+    }
+    flows.sort_by(|a, b| a.path.cmp(&b.path));
+    InstallPreview { file_count: files.len(), flows }
+}
+
 /// Write a set of files (`path -> bytes`) into `workspace`, enforcing the same
 /// definition-layer + traversal safety as the `dup` push endpoint. Creates
 /// parent dirs and writes atomically (`.duptmp` + rename). Files outside the
