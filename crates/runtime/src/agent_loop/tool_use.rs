@@ -5,7 +5,7 @@
 //! - Executes each tool with timeout and truncation
 //! - Handles flow_load deduplication
 //! - Tracks consecutive tool errors
-//! - Refreshes the tool list after tool_search / flow_load
+//! - Logs flow_load skill loads (tool list refresh now happens via flow inject)
 //! - Detects task_plan and signals a loop break
 
 use super::*;
@@ -17,14 +17,12 @@ use crate::llm_driver::{Brain, StreamEvent};
 use crate::mcp::McpConnection;
 use crate::tool_context::ToolContext;
 use crate::tool_runner;
-use crate::web_fetch::WebFetchEngine;
 use carrier_memory::MemorySubstrate;
+use carrier_types::message::{ContentBlock, Message, MessageContent, Role};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
-use carrier_types::message::{ContentBlock, Message, MessageContent, Role};
-use carrier_types::tool::ToolDefinition;
 
 /// When a tool fails this many consecutive times, escalate the feedback
 /// to urge the LLM to change approach entirely. (Tools are NOT removed —
@@ -82,7 +80,6 @@ pub(in crate::agent_loop) async fn handle_tool_use(
     on_phase: Option<&PhaseCallback>,
     stream_tx: &Option<tokio::sync::mpsc::Sender<StreamEvent>>,
     mcp_connections: Option<&dashmap::DashMap<String, McpConnection>>,
-    fetch_engine: Option<&WebFetchEngine>,
     workspace_root: Option<&Path>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     context_budget: &ContextBudget,
@@ -95,8 +92,6 @@ pub(in crate::agent_loop) async fn handle_tool_use(
     any_tools_executed: &mut bool,
     tools_this_iter: &mut u32,
     recent_tool_calls: &mut Vec<(String, u64)>,
-    tools_owned: &mut Vec<ToolDefinition>,
-    discovered_tool_names: &mut std::collections::HashSet<String>,
     loaded_flows: &mut std::collections::HashSet<String>,
     loaded_flow_shell_allow: &mut Vec<String>,
     loaded_flow_elevated_tools: &mut Vec<String>,
@@ -263,7 +258,8 @@ pub(in crate::agent_loop) async fn handle_tool_use(
     for tool_call in &response.tool_calls {
         // Canonicalize name up front so trailing punctuation from free-text
         // recovery (`web_search,`) and aliases hit the right tool path.
-        let tool_name = carrier_types::tool_compat::normalize_tool_name(&tool_call.name).to_string();
+        let tool_name =
+            carrier_types::tool_compat::normalize_tool_name(&tool_call.name).to_string();
         debug!(tool = %tool_name, id = %tool_call.id, "Executing tool");
 
         // Notify phase: ToolUse
@@ -394,7 +390,6 @@ pub(in crate::agent_loop) async fn handle_tool_use(
             memory: memory_handle,
             caller_agent_id: Some(&caller_id_str),
             mcp_connections,
-            fetch_engine,
             allowed_env_vars: if hand_allowed_env.is_empty() {
                 None
             } else {
@@ -712,125 +707,17 @@ pub(in crate::agent_loop) async fn handle_tool_use(
     // O6: Single-track — only push to messages, not session
     messages.push(tool_results_msg);
 
-    // Dynamic tool refresh (streaming path)
-    let tools_may_have_changed = response.tool_calls.iter().any(|tc| {
-        matches!(
-            tc.name.as_str(),
-            "train_write" | "file_write" | "tool_search" | "flow_load"
-        )
-    });
-    if tools_may_have_changed {
-        if let Some(kernel) = kernel {
-            let _agent_id_str = session.agent_name.to_string();
-
-            // Log flow_load calls
-            let flow_load_count = response
-                .tool_calls
-                .iter()
-                .filter(|tc| tc.name == "flow_load")
-                .count();
-            if flow_load_count > 0 {
-                info!(count = flow_load_count, "Skill(s) loaded");
-            }
-
-            // tool_search: add found tools to the tools list so the LLM API
-            // allows outputting tool_use for them on the next iteration.
-            // The LLM already saw the tool definitions in the tool_search result,
-            // but the API requires tools to be in CompletionRequest.tools for
-            // structured tool_use output.
-            let search_queries: Vec<&str> = response
-                .tool_calls
-                .iter()
-                .filter(|tc| tc.name == "tool_search")
-                .filter_map(|tc| tc.input.get("query").and_then(|v| v.as_str()))
-                .collect();
-
-            let mut found_tools: Vec<ToolDefinition> = Vec::new();
-            let mut found_names: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-
-            // With flow_load elevation active, search at Dangerous so the
-            // granted tools (e.g. shell_exec) are candidates at all — the
-            // post-filter below re-cages anything above the agent's own level
-            // that isn't in the granted set.
-            let search_level = if loaded_flow_elevated_tools.is_empty() {
-                manifest.max_tool_level
-            } else {
-                carrier_types::tool::PermissionLevel::Dangerous
-            };
-            for q in &search_queries {
-                let results =
-                    kernel.search_tools(q, super::helpers::TOOL_SEARCH_RECALL_LIMIT, search_level);
-                for (_, def) in results {
-                    if found_names.insert(def.name.clone()) {
-                        found_tools.push(def);
-                    }
-                }
-            }
-
-            if !found_tools.is_empty() {
-                // O11: Append discovered tools instead of evicting previous ones.
-                // Previously, each tool_search would evict tools from the last search.
-                // This caused the LLM to re-search when it needed tools from two
-                // different contexts in the same conversation. Now we accumulate,
-                // capped by MAX_TOTAL_TOOLS to prevent unbounded inflation.
-                // 64 (was 32 — one tool_search returning 10 results could fill the
-                // cap alongside a ~23-tool base set, silently dropping all later
-                // discoveries and forcing the LLM to re-search in a loop).
-                const MAX_TOTAL_TOOLS: usize = 64;
-                let current_count = tools_owned.len();
-                let remaining_capacity = MAX_TOTAL_TOOLS.saturating_sub(current_count);
-                let mut flow_allowed_owned: Vec<String> = manifest
-                    .metadata
-                    .get(carrier_types::flow::META_FLOW_ALLOWED_TOOLS)
-                    .and_then(|v| {
-                        v.as_array().map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                    })
-                    .unwrap_or_default();
-                // Same widening as the execute-time sandbox above: tools of
-                // elevating flow_load-ed flows are exempt from the cage.
-                for t in loaded_flow_elevated_tools.iter() {
-                    if !flow_allowed_owned.contains(t) {
-                        flow_allowed_owned.push(t.clone());
-                    }
-                }
-                let flow_allowed = if flow_allowed_owned.is_empty() {
-                    None
-                } else {
-                    Some(flow_allowed_owned.as_slice())
-                };
-                let to_add: Vec<_> = found_tools
-                    .into_iter()
-                    .filter(|t| crate::tool_runner::tool_permitted_in_flow(&t.name, flow_allowed))
-                    // Re-cage the elevated search: a tool above the agent's own
-                    // max_tool_level is only discoverable when flow_load granted
-                    // it (base names normalized on both sides).
-                    .filter(|t| {
-                        carrier_types::tool::PermissionLevel::for_tool(&t.name) <= manifest.max_tool_level
-                            || loaded_flow_elevated_tools
-                                .iter()
-                                .any(|g| crate::tool_runner::base_tool_name(g) == t.name)
-                    })
-                    .filter(|t| !tools_owned.iter().any(|existing| existing.name == t.name))
-                    .take(remaining_capacity)
-                    .collect();
-                if !to_add.is_empty() {
-                    for t in &to_add {
-                        discovered_tool_names.insert(t.name.clone());
-                    }
-                    info!(
-                        found = to_add.len(),
-                        total = current_count + to_add.len(),
-                        "tool_search: adding discovered tools to CompletionRequest.tools"
-                    );
-                    tools_owned.extend(to_add);
-                }
-            }
-        }
+    // flow_load 可观测性（流式路径）。tool_search 已退役（M31 D3 批1，
+    // 宪法性替代：`ag commands`）——工具发现的两条活路径：flow `tools:`
+    // 注入（messaging.rs inject_flow_tools）与文本恢复期的名字解析
+    // （mod.rs 恢复块），都不经这里。
+    let flow_load_count = response
+        .tool_calls
+        .iter()
+        .filter(|tc| tc.name == "flow_load")
+        .count();
+    if flow_load_count > 0 {
+        info!(count = flow_load_count, "Skill(s) loaded");
     }
 
     // Note: no per-iteration save here — save happens at loop end

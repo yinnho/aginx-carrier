@@ -57,10 +57,9 @@ impl KernelA2a {
     }
 }
 
-/// External service integrations (web fetch, media, TTS, embeddings).
+/// External service integrations (media, TTS, embeddings).
+/// （M31 D3 批1：web fetch 引擎已随 agb CLI 外置成包，不再常驻 kernel。）
 pub struct KernelServices {
-    /// Web fetch engine (SSRF-protected URL fetching + caching).
-    pub fetch_engine: carrier_runtime::web_fetch::WebFetchEngine,
     /// Media understanding engine (image description, audio transcription).
     pub media_engine: carrier_runtime::media_understanding::MediaEngine,
 }
@@ -152,7 +151,8 @@ pub struct CarrierKernel {
     /// Channel deliver function: (channel_type, bot_id, user_id, content) -> Result.
     /// Wired up alongside channel_send_fn. Backs `[DELIVER:key]` marker handling
     /// and script/no-agent rich-content delivery.
-    pub channel_deliver_fn: std::sync::RwLock<Option<carrier_runtime::plugin::bridge::ChannelDeliverFn>>,
+    pub channel_deliver_fn:
+        std::sync::RwLock<Option<carrier_runtime::plugin::bridge::ChannelDeliverFn>>,
     /// Channel proactive-push capability probe: channel_type → bool.
     /// Wired up alongside channel_send_fn.
     pub channel_supports_proactive_fn: std::sync::RwLock<Option<ChannelProactivePushFn>>,
@@ -317,15 +317,18 @@ impl CarrierKernel {
                             // Feedback pipeline — anonymize and push to Hub
                             if feedback_to_hub && !analysis.knowledge.is_empty() {
                                 for candidate in &analysis.knowledge {
-                                    let (sys, user) = carrier_lifecycle::feedback::build_anonymize_prompt(
-                                        &candidate.title,
-                                        &candidate.content,
-                                    );
+                                    let (sys, user) =
+                                        carrier_lifecycle::feedback::build_anonymize_prompt(
+                                            &candidate.title,
+                                            &candidate.content,
+                                        );
                                     let anon_req = carrier_runtime::llm_driver::CompletionRequest {
                                         model: String::new(),
                                         messages: vec![carrier_types::message::Message {
                                             role: carrier_types::message::Role::User,
-                                            content: carrier_types::message::MessageContent::Text(user),
+                                            content: carrier_types::message::MessageContent::Text(
+                                                user,
+                                            ),
                                         }],
                                         tools: vec![],
                                         max_tokens: 1024,
@@ -352,12 +355,14 @@ impl CarrierKernel {
                                                         candidate.content.clone(),
                                                     )
                                                 });
-                                            if let Err(e) = carrier_lifecycle::feedback::save_feedback(
-                                                &workspace,
-                                                &clone_name,
-                                                &title,
-                                                &content,
-                                            ) {
+                                            if let Err(e) =
+                                                carrier_lifecycle::feedback::save_feedback(
+                                                    &workspace,
+                                                    &clone_name,
+                                                    &title,
+                                                    &content,
+                                                )
+                                            {
                                                 tracing::warn!(error = %e, "Feedback: failed to save");
                                             }
                                         }
@@ -493,8 +498,9 @@ impl CarrierKernel {
             let json_str = std::fs::read_to_string(&brain_path).map_err(|e| {
                 KernelError::BootFailed(format!("Cannot read {}: {e}", brain_path.display()))
             })?;
-            let brain_config: carrier_types::brain::BrainConfig = serde_json::from_str(&json_str)
-                .map_err(|e| KernelError::BootFailed(format!("Invalid brain.json: {e}")))?;
+            let brain_config: carrier_types::brain::BrainConfig =
+                serde_json::from_str(&json_str)
+                    .map_err(|e| KernelError::BootFailed(format!("Invalid brain.json: {e}")))?;
             let brain = Brain::new(brain_config)
                 .map_err(|e| KernelError::BootFailed(format!("Brain init failed: {e}")))?;
             info!("Brain loaded from {}", brain_path.display());
@@ -542,14 +548,9 @@ impl CarrierKernel {
 
         let brain_arc: Arc<Brain> = Arc::new(brain);
 
-        // Initialize web fetch engine (SSRF-protected fetch + caching)
-        let cache_ttl = std::time::Duration::from_secs(config.web.cache_ttl_minutes * 60);
-        let web_cache = Arc::new(carrier_runtime::web_cache::WebCache::new(cache_ttl));
-        let fetch_engine =
-            carrier_runtime::web_fetch::WebFetchEngine::new(config.web.fetch.clone(), web_cache);
-
         // Initialize media understanding engine
-        let media_engine = carrier_runtime::media_understanding::MediaEngine::new(config.media.clone());
+        let media_engine =
+            carrier_runtime::media_understanding::MediaEngine::new(config.media.clone());
 
         // Initialize cron scheduler with DB-backed persistence
         let mut cron_scheduler =
@@ -590,10 +591,7 @@ impl CarrierKernel {
                 a2a_task_store: carrier_runtime::a2a::A2aTaskStore::default(),
                 a2a_external_agents: std::sync::Mutex::new(Vec::new()),
             },
-            services: KernelServices {
-                fetch_engine,
-                media_engine,
-            },
+            services: KernelServices { media_engine },
             plugins: KernelPlugins {
                 mcp_connections: Arc::new(dashmap::DashMap::new()),
                 mcp_tools: std::sync::Mutex::new(Vec::new()),
@@ -859,8 +857,8 @@ impl CarrierKernel {
     /// Call this before `spawn_agent` when a `SignedManifest` JSON is provided
     /// alongside the TOML. Returns the verified manifest TOML string on success.
     pub fn verify_signed_manifest(&self, signed_json: &str) -> KernelResult<String> {
-        let signed: carrier_types::manifest_signing::SignedManifest = serde_json::from_str(signed_json)
-            .map_err(|e| {
+        let signed: carrier_types::manifest_signing::SignedManifest =
+            serde_json::from_str(signed_json).map_err(|e| {
                 KernelError::Carrier(carrier_types::error::CarrierError::Config(format!(
                     "Invalid signed manifest JSON: {e}"
                 )))
@@ -926,7 +924,7 @@ impl CarrierKernel {
     /// Map a builtin tool name to its toolset. Returns None for core tools.
     fn tool_to_toolset(name: &str) -> Option<&'static str> {
         match name {
-            "session_summarize" | "tool_search" | "flow_load" | "flow_create" | "flow_update"
+            "session_summarize" | "flow_load" | "flow_create" | "flow_update"
             | "knowledge_read" | "knowledge_list" | "file_read" | "file_list" | "cron_create"
             | "cron_list" | "cron_cancel" | "memory_tree" | "task_plan" => None,
             n if n.starts_with("file_") => Some("filesystem"),
@@ -1393,7 +1391,8 @@ impl CarrierKernel {
             task_id,
             chain_id,
         };
-        manifest.model.system_prompt = carrier_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
+        manifest.model.system_prompt =
+            carrier_runtime::prompt_builder::build_system_prompt(&prompt_ctx);
     }
 
     /// Push a notification to admins (automation `notify_admin` rule bypass).
@@ -1444,8 +1443,9 @@ impl CarrierKernel {
                     .map(|p| p.to_string_lossy().to_string());
                 match ws {
                     Some(ws) => {
-                        let admins =
-                            carrier_runtime::plugin::admin_store::read_admins(std::path::Path::new(&ws));
+                        let admins = carrier_runtime::plugin::admin_store::read_admins(
+                            std::path::Path::new(&ws),
+                        );
                         admins
                             .admins
                             .into_iter()
@@ -1718,8 +1718,8 @@ impl CarrierKernel {
 mod tests {
     use super::*;
     use crate::capabilities::manifest_to_capabilities;
-    use std::collections::HashMap;
     use carrier_types::capability::Capability;
+    use std::collections::HashMap;
 
     /// 检索回指 regression: kv prefetch must read the SAME partition the
     /// writers use — `(agent_name, owner_id or "", sender_id or "")`. The old

@@ -2,8 +2,8 @@ use super::state;
 use super::*;
 use crate::llm_driver::{CompletionResponse, LlmError};
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicU32, Ordering};
 use carrier_types::tool::ToolCall;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
 fn test_context_pressure_from_usage_pct() {
@@ -607,7 +607,6 @@ async fn test_empty_response_after_tool_use_returns_fallback() {
         None, // kernel
         None, // stream_tx
         None, // mcp_connections
-        None, // fetch_engine
         None, // workspace_root
         None, // on_phase
         None, // hooks
@@ -662,7 +661,6 @@ async fn test_tool_error_injects_no_fabrication_guidance() {
         None, // kernel
         None, // stream_tx
         None, // mcp_connections
-        None, // fetch_engine
         None, // workspace_root
         None, // on_phase
         None, // hooks
@@ -720,7 +718,6 @@ async fn test_empty_response_max_tokens_returns_fallback() {
         None, // stream_tx
         None,
         None,
-        None,
         None, // on_phase
         None, // hooks
         None, // context_window_tokens
@@ -773,7 +770,6 @@ async fn test_normal_response_not_replaced_by_fallback() {
         &[],
         None,
         None, // stream_tx
-        None,
         None,
         None,
         None, // on_phase
@@ -835,7 +831,6 @@ async fn test_no_progress_kills_after_all_failing_tools() {
         None,
         None,
         None,
-        None,
     )
     .await;
 
@@ -872,7 +867,6 @@ async fn test_streaming_empty_response_after_tool_use_returns_fallback() {
         &[],
         None,
         tx,
-        None,
         None,
         None,
         None, // on_phase
@@ -999,7 +993,6 @@ async fn test_empty_first_response_retries_and_recovers() {
         None,
         None,
         None,
-        None,
         None, // context_window_tokens
         None, // process_manager
         None, // user_content_blocks
@@ -1044,7 +1037,6 @@ async fn test_empty_first_response_fallback_when_retry_also_empty() {
         &[],
         None,
         None, // stream_tx
-        None,
         None,
         None,
         None,
@@ -1100,7 +1092,6 @@ async fn test_streaming_empty_response_max_tokens_returns_fallback() {
         &[],
         None,
         tx,
-        None,
         None,
         None,
         None, // on_phase

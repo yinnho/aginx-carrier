@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use tracing::{debug, info, warn};
 use carrier_types::agent::*;
 use carrier_types::error::CarrierError;
+use tracing::{debug, info, warn};
 
 use crate::error::{KernelError, KernelResult};
 use crate::kernel::CarrierKernel;
@@ -725,7 +725,9 @@ impl CarrierKernel {
                     let text: String = blocks
                         .iter()
                         .filter_map(|b| match b {
-                            carrier_types::message::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            carrier_types::message::ContentBlock::Text { text, .. } => {
+                                Some(text.as_str())
+                            }
                             _ => None,
                         })
                         .collect::<Vec<_>>()
@@ -795,7 +797,7 @@ impl CarrierKernel {
             });
 
         let system_prompt = &entry.manifest.model.system_prompt;
-        // Core tool set (same as messaging.rs — other tools found via tool_search)
+        // Core tool set (same as messaging.rs — other tools injected per manifest/flow)
         let mut tools: Vec<carrier_types::tool::ToolDefinition> =
             carrier_runtime::tool_runner::builtin_tool_definitions(self.config.cli_exec.clone())
                 .into_iter()

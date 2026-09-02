@@ -2,10 +2,10 @@
 
 use crate::tool_context::ToolContext;
 use async_trait::async_trait;
-use serde_json::Value;
-use std::path::{Path, PathBuf};
 use carrier_types::error::{CarrierError, CarrierResult};
 use carrier_types::tool::ToolDefinition;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Module struct
@@ -88,7 +88,9 @@ impl super::ToolModule for FilesystemTools {
 
     fn permission_level(&self, tool_name: &str) -> carrier_types::tool::PermissionLevel {
         match tool_name {
-            "file_read" | "file_list" | "file_convert" => carrier_types::tool::PermissionLevel::ReadOnly,
+            "file_read" | "file_list" | "file_convert" => {
+                carrier_types::tool::PermissionLevel::ReadOnly
+            }
             "file_write" => carrier_types::tool::PermissionLevel::Write,
             _ => carrier_types::tool::PermissionLevel::Dangerous,
         }
@@ -681,7 +683,6 @@ mod tests {
             memory: None,
             caller_agent_id: None,
             mcp_connections: None,
-            fetch_engine: None,
             allowed_env_vars: None,
             workspace_root: None,
             brain: None,

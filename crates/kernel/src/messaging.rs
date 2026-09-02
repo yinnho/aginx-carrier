@@ -9,11 +9,11 @@ use carrier_runtime::llm_driver::LlmDriver;
 use carrier_runtime::llm_driver::StreamEvent;
 use carrier_runtime::python_runtime::{self, PythonConfig};
 use carrier_runtime::sandbox::SandboxConfig;
+use carrier_types::agent::*;
+use carrier_types::error::CarrierError;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{info, warn};
-use carrier_types::agent::*;
-use carrier_types::error::CarrierError;
 
 use crate::capabilities::manifest_to_capabilities;
 use crate::error::{KernelError, KernelResult};
@@ -477,7 +477,8 @@ impl CarrierKernel {
             Some(Arc::clone(&*self.brain.brain.read().unwrap_or_else(|e| {
                 warn!("Brain RwLock poisoned, recovering");
                 e.into_inner()
-            })) as Arc<dyn carrier_runtime::llm_driver::Brain>);
+            }))
+                as Arc<dyn carrier_runtime::llm_driver::Brain>);
 
         // Flow resolution priority: resume > explicit active_flow > LLM classify.
         // resume and active_flow both load a named flow directly (skipping the
@@ -688,8 +689,9 @@ impl CarrierKernel {
             names
         };
         if !api_tool_names.is_empty() {
-            let all_builtins =
-                carrier_runtime::tool_runner::builtin_tool_definitions(self.config.cli_exec.clone());
+            let all_builtins = carrier_runtime::tool_runner::builtin_tool_definitions(
+                self.config.cli_exec.clone(),
+            );
             for t in &all_builtins {
                 if api_tool_names.contains(&t.name) {
                     tools.push(t.clone());
@@ -1000,7 +1002,7 @@ impl CarrierKernel {
         }
         // Flow `tools:` hard sandbox: when the matched flow declares a non-empty
         // tool set, freeze the assembled toolset (base + flow tools, post-deny)
-        // as the turn's allow-list. tool_search is filtered to this set and
+        // as the turn's allow-list. Flow-injected tools are filtered to this set and
         // tool_runner denies calls outside it — so the agent can't wander to
         // out-of-flow catalog tools (e.g. clone-creator reaching train_write
         // instead of the flow's declared clone_install). Only stamped when the
@@ -1027,7 +1029,8 @@ impl CarrierKernel {
         // casual chat turn only sees the gate if the classifier matched a
         // report flow for it.
         if flow.flow_def.output.as_deref().is_some_and(|o| {
-            carrier_types::flow::StepOutputMode::parse(o.trim()) == carrier_types::flow::StepOutputMode::Report
+            carrier_types::flow::StepOutputMode::parse(o.trim())
+                == carrier_types::flow::StepOutputMode::Report
         }) {
             manifest.metadata.insert(
                 carrier_types::flow::META_OUTPUT_REPORT.to_string(),
@@ -1629,23 +1632,24 @@ impl CarrierKernel {
 
             // Create a phase callback that emits PhaseChange events to WS/SSE clients
             let phase_tx = tx.clone();
-            let phase_cb: carrier_runtime::agent_loop::PhaseCallback = std::sync::Arc::new(move |phase| {
-                use carrier_runtime::agent_loop::LoopPhase;
-                let (phase_str, detail) = match &phase {
-                    LoopPhase::Thinking => ("thinking".to_string(), None),
-                    LoopPhase::ToolUse { tool_name } => {
-                        ("tool_use".to_string(), Some(tool_name.clone()))
-                    }
-                    LoopPhase::Streaming => ("streaming".to_string(), None),
-                    LoopPhase::Done => ("done".to_string(), None),
-                    LoopPhase::Error => ("error".to_string(), None),
-                };
-                let event = StreamEvent::PhaseChange {
-                    phase: phase_str,
-                    detail,
-                };
-                let _ = phase_tx.try_send(event);
-            });
+            let phase_cb: carrier_runtime::agent_loop::PhaseCallback =
+                std::sync::Arc::new(move |phase| {
+                    use carrier_runtime::agent_loop::LoopPhase;
+                    let (phase_str, detail) = match &phase {
+                        LoopPhase::Thinking => ("thinking".to_string(), None),
+                        LoopPhase::ToolUse { tool_name } => {
+                            ("tool_use".to_string(), Some(tool_name.clone()))
+                        }
+                        LoopPhase::Streaming => ("streaming".to_string(), None),
+                        LoopPhase::Done => ("done".to_string(), None),
+                        LoopPhase::Error => ("error".to_string(), None),
+                    };
+                    let event = StreamEvent::PhaseChange {
+                        phase: phase_str,
+                        detail,
+                    };
+                    let _ = phase_tx.try_send(event);
+                });
 
             let result = run_agent_loop_streaming(
                 &manifest,
@@ -1657,7 +1661,6 @@ impl CarrierKernel {
                 kernel_handle,
                 tx,
                 Some(&kernel_clone.plugins.mcp_connections),
-                Some(&kernel_clone.services.fetch_engine),
                 manifest.workspace.as_deref(),
                 Some(&phase_cb),
                 Some(&kernel_clone.coordination.hooks),
@@ -1756,15 +1759,15 @@ impl CarrierKernel {
 
                     // Persist usage and check budget thresholds
                     let model = manifest.model.modality.clone();
-                    match kernel_clone
-                        .metering
-                        .record_and_check(&carrier_memory::usage::UsageRecord {
+                    match kernel_clone.metering.record_and_check(
+                        &carrier_memory::usage::UsageRecord {
                             agent_id,
                             model: model.clone(),
                             input_tokens: result.total_usage.input_tokens,
                             output_tokens: result.total_usage.output_tokens,
                             tool_calls: result.iterations.saturating_sub(1),
-                        }) {
+                        },
+                    ) {
                         Ok(Some(alert)) => kernel_clone.handle_budget_alert(&alert),
                         Err(e) => warn!("Failed to record metering: {e}"),
                         _ => {}
@@ -2034,8 +2037,7 @@ impl CarrierKernel {
         let mut manifest = entry.manifest.clone();
 
         // 会话从票据还原（全新 session id——服务器不记忆会话身份，票据即身份）。
-        let mut session =
-            carrier_memory::session::Session::from_ticket(ticket, agent_name.clone());
+        let mut session = carrier_memory::session::Session::from_ticket(ticket, agent_name.clone());
         if session.label.is_none() {
             session.label = Some(format!("borrow:{agent_name}"));
         }
@@ -2051,13 +2053,12 @@ impl CarrierKernel {
         let mut tools = self.resolve_tools(&entry);
 
         // 借用轮产物通道依赖 file_write，但 CORE_TOOL_NAMES 不含它（生产路径
-        // 靠 tool_search 发现）——借用轮没有持久会话可等发现，直接补挂。
+        // 靠 flow 注入发现）——借用轮没有持久会话可等注入，直接补挂。
         if !tools.iter().any(|t| t.name == "file_write") {
-            if let Some(fw) = carrier_runtime::tool_runner::builtin_tool_definitions(
-                self.config.cli_exec.clone(),
-            )
-            .into_iter()
-            .find(|t| t.name == "file_write")
+            if let Some(fw) =
+                carrier_runtime::tool_runner::builtin_tool_definitions(self.config.cli_exec.clone())
+                    .into_iter()
+                    .find(|t| t.name == "file_write")
             {
                 tools.push(fw);
             }
@@ -2189,13 +2190,15 @@ impl CarrierKernel {
             Some(Arc::clone(&*self.brain.brain.read().unwrap_or_else(|e| {
                 warn!("Brain RwLock poisoned, recovering");
                 e.into_inner()
-            })) as Arc<dyn carrier_runtime::llm_driver::Brain>);
+            }))
+                as Arc<dyn carrier_runtime::llm_driver::Brain>);
 
         // In-process memory handle over the ephemeral substrate——kv/tree 工具
         // 写进临时 substrate（随轮销毁），且绝不走 aginxMemory 外置路由（防借用者
         // 记忆泄漏进共享 PG）。
-        let memory_handle: Arc<dyn carrier_runtime::memory_handle::MemoryHandle> =
-            Arc::new(crate::handle::MemorySubstrateHandle::new(Arc::clone(&ephemeral)));
+        let memory_handle: Arc<dyn carrier_runtime::memory_handle::MemoryHandle> = Arc::new(
+            crate::handle::MemorySubstrateHandle::new(Arc::clone(&ephemeral)),
+        );
 
         let loop_result = run_agent_loop(
             &manifest,
@@ -2207,7 +2210,6 @@ impl CarrierKernel {
             kernel_handle,
             stream_tx,
             Some(&self.plugins.mcp_connections),
-            Some(&self.services.fetch_engine),
             manifest.workspace.as_deref(),
             None,
             Some(&self.coordination.hooks),
@@ -2272,7 +2274,9 @@ impl CarrierKernel {
                                     .encode(content),
                             });
                         }
-                        Err(e) => warn!(path = %p.display(), error = %e, "borrowed output collect failed"),
+                        Err(e) => {
+                            warn!(path = %p.display(), error = %e, "borrowed output collect failed")
+                        }
                     }
                 }
             }
@@ -2288,7 +2292,10 @@ impl CarrierKernel {
             }
         }
         if skipped_oversize > 0 {
-            warn!(skipped = skipped_oversize, "borrowed outputs over budget not returned");
+            warn!(
+                skipped = skipped_oversize,
+                "borrowed outputs over budget not returned"
+            );
         }
 
         let outcome = BorrowedTurnOutcome {
@@ -2310,10 +2317,7 @@ impl CarrierKernel {
     fn record_borrow_usage(&self, borrower: &str, agent: &str) -> KernelResult<u32> {
         use std::io::Write as _;
 
-        let path = self
-            .config
-            .data_dir
-            .join("borrow_usage.jsonl");
+        let path = self.config.data_dir.join("borrow_usage.jsonl");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 KernelError::Carrier(CarrierError::Internal(format!(
@@ -2433,7 +2437,8 @@ impl CarrierKernel {
             Some(Arc::clone(&*self.brain.brain.read().unwrap_or_else(|e| {
                 warn!("Brain RwLock poisoned, recovering");
                 e.into_inner()
-            })) as Arc<dyn carrier_runtime::llm_driver::Brain>);
+            }))
+                as Arc<dyn carrier_runtime::llm_driver::Brain>);
 
         // Extract MemoryHandle from kernel.
         let memory_handle: Option<Arc<dyn carrier_runtime::memory_handle::MemoryHandle>> =
@@ -2584,7 +2589,6 @@ impl CarrierKernel {
                 kernel_handle.clone(),
                 None, // stream_tx: non-streaming path
                 Some(&self.plugins.mcp_connections),
-                Some(&self.services.fetch_engine),
                 manifest.workspace.as_deref(),
                 None, // on_phase callback
                 Some(&self.coordination.hooks),
@@ -2705,13 +2709,15 @@ impl CarrierKernel {
 
         // Record usage and check budget thresholds
         let model = manifest.model.modality.clone();
-        match self.metering.record_and_check(&carrier_memory::usage::UsageRecord {
-            agent_id,
-            model: model.clone(),
-            input_tokens: result.total_usage.input_tokens,
-            output_tokens: result.total_usage.output_tokens,
-            tool_calls: result.iterations.saturating_sub(1),
-        }) {
+        match self
+            .metering
+            .record_and_check(&carrier_memory::usage::UsageRecord {
+                agent_id,
+                model: model.clone(),
+                input_tokens: result.total_usage.input_tokens,
+                output_tokens: result.total_usage.output_tokens,
+                tool_calls: result.iterations.saturating_sub(1),
+            }) {
             Ok(Some(alert)) => self.handle_budget_alert(&alert),
             Err(e) => warn!("Failed to record metering: {e}"),
             _ => {}
@@ -2757,13 +2763,15 @@ impl CarrierKernel {
         }
 
         let model = manifest.model.modality.clone();
-        match self.metering.record_and_check(&carrier_memory::usage::UsageRecord {
-            agent_id,
-            model,
-            input_tokens: r.total_usage.input_tokens,
-            output_tokens: r.total_usage.output_tokens,
-            tool_calls: r.iterations.saturating_sub(1),
-        }) {
+        match self
+            .metering
+            .record_and_check(&carrier_memory::usage::UsageRecord {
+                agent_id,
+                model,
+                input_tokens: r.total_usage.input_tokens,
+                output_tokens: r.total_usage.output_tokens,
+                tool_calls: r.iterations.saturating_sub(1),
+            }) {
             Ok(Some(alert)) => self.handle_budget_alert(&alert),
             Err(e) => warn!("Failed to record metering: {e}"),
             _ => {}
@@ -2966,7 +2974,6 @@ impl CarrierKernel {
                         kh,
                         None,
                         Some(&*mcp_arc),
-                        None, // fetch_engine: not available in spawned task
                         ws.as_deref(),
                         None, // on_phase
                         None, // hooks: not available in spawned task
@@ -3090,7 +3097,8 @@ fn partition_steps_by_layers(
 
     // Group by layer
     let max_layer = layer_of.values().copied().max().unwrap_or(0);
-    let mut layers: Vec<Vec<&carrier_runtime::agent_loop::TaskStep>> = vec![Vec::new(); max_layer + 1];
+    let mut layers: Vec<Vec<&carrier_runtime::agent_loop::TaskStep>> =
+        vec![Vec::new(); max_layer + 1];
     for step in steps {
         if let Some(&layer) = layer_of.get(&step.id) {
             layers[layer].push(step_map[step.id.as_str()]);
@@ -3103,12 +3111,12 @@ fn partition_steps_by_layers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use std::collections::HashMap;
     use carrier_types::agent::{
         AgentEntry, AgentId, AgentManifest, AgentMode, AgentState, ManifestCapabilities,
         ModelConfig, ResourceQuota, ScheduleMode, SessionId,
     };
+    use chrono::Utc;
+    use std::collections::HashMap;
 
     fn entry_with_workspace(ws: &std::path::Path) -> AgentEntry {
         AgentEntry {
@@ -3283,8 +3291,10 @@ mod tests {
         async fn complete(
             &self,
             request: carrier_runtime::llm_driver::CompletionRequest,
-        ) -> Result<carrier_runtime::llm_driver::CompletionResponse, carrier_runtime::llm_driver::LlmError>
-        {
+        ) -> Result<
+            carrier_runtime::llm_driver::CompletionResponse,
+            carrier_runtime::llm_driver::LlmError,
+        > {
             self.requests.lock().unwrap().push(RecordedRequest {
                 tool_names: request.tools.iter().map(|t| t.name.clone()).collect(),
                 system: request.system.clone().unwrap_or_default(),
@@ -3325,15 +3335,18 @@ mod tests {
     /// code-defined surface only, so these are subtracted before comparing.
     fn machine_config_tool_names(entry: &AgentEntry) -> std::collections::HashSet<String> {
         let home = carrier_types::config::home_dir();
-        carrier_runtime::api_tools::loader::load_all_api_tools(&home, entry.manifest.workspace.as_deref())
-            .into_iter()
-            .map(|t| t.name)
-            .chain(
-                carrier_runtime::api_tools::register::dynamic_tools()
-                    .into_iter()
-                    .map(|t| t.name),
-            )
-            .collect()
+        carrier_runtime::api_tools::loader::load_all_api_tools(
+            &home,
+            entry.manifest.workspace.as_deref(),
+        )
+        .into_iter()
+        .map(|t| t.name)
+        .chain(
+            carrier_runtime::api_tools::register::dynamic_tools()
+                .into_iter()
+                .map(|t| t.name),
+        )
+        .collect()
     }
 
     /// Core tool surface golden — the bootstrap set every agent's turn starts
@@ -3378,7 +3391,6 @@ mod tests {
             "kv_set",
             "session_summarize",
             "task_plan",
-            "tool_search",
             "user_profile",
             "web_fetch",
             "web_search",
@@ -3479,7 +3491,6 @@ mod tests {
             None,
             None,
             None,
-            None,
         )
         .await
         .expect("loop runs");
@@ -3520,7 +3531,6 @@ mod tests {
             "kv_set",
             "session_summarize",
             "shell_exec",
-            "tool_search",
             "user_profile",
             "web_fetch",
             "web_search",
@@ -3701,9 +3711,10 @@ mod tests {
                 },
             )]),
         };
-        *kernel.brain.brain.write().unwrap() = Arc::new(
-            crate::brain::Brain::with_test_driver(brain_config, Arc::new(driver)),
-        );
+        *kernel.brain.brain.write().unwrap() = Arc::new(crate::brain::Brain::with_test_driver(
+            brain_config,
+            Arc::new(driver),
+        ));
     }
 
     /// 借用轮（第三刀 3.1）：票据进/出 + 上下文连续性 + 无状态断言。
@@ -3762,11 +3773,23 @@ mod tests {
         // run_borrowed_turn 经 registry 解析 agent——直接注册测试 entry。
         let entry = entry_with_workspace(std::path::Path::new("/tmp/nonexistent-ws"));
         let agent_id = entry.id;
-        kernel.registry.register(entry).expect("agent should register");
+        kernel
+            .registry
+            .register(entry)
+            .expect("agent should register");
 
         // 第一轮：空票据进。
         let out1 = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "ALPHA-MARKER", None, None, &[], None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "ALPHA-MARKER",
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
             .await
             .expect("first borrowed turn should succeed");
         assert!(!out1.response.is_empty());
@@ -3781,7 +3804,16 @@ mod tests {
 
         // 第二轮：回喂第一轮票据——echo 必须同时看见 ALPHA 与 BETA。
         let out2 = kernel
-            .run_borrowed_turn(agent_id, out1.ticket, "BETA-MARKER", None, None, &[], None, None)
+            .run_borrowed_turn(
+                agent_id,
+                out1.ticket,
+                "BETA-MARKER",
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
             .await
             .expect("second borrowed turn should succeed");
         assert!(
@@ -3883,7 +3915,12 @@ mod tests {
 
         let (_tmp, kernel) = boot_test_kernel();
         let ws = tempfile::tempdir().unwrap();
-        install_test_driver(&kernel, MaterialsProbeDriver { ws: ws.path().to_path_buf() });
+        install_test_driver(
+            &kernel,
+            MaterialsProbeDriver {
+                ws: ws.path().to_path_buf(),
+            },
+        );
 
         // 植入上一个"死轮"残留——开轮清扫必须吃掉它。
         std::fs::create_dir_all(ws.path().join("borrow/stale-turn/materials")).unwrap();
@@ -3893,7 +3930,10 @@ mod tests {
         entry.name = "materials-test-agent".to_string();
         entry.manifest.name = entry.name.clone();
         let agent_id = entry.id;
-        kernel.registry.register(entry).expect("agent should register");
+        kernel
+            .registry
+            .register(entry)
+            .expect("agent should register");
 
         // 正常轮：素材轮中可读 + prompt 提示注入 + 轮末销毁 + 残留清扫。
         let materials = vec![super::BorrowedMaterial {
@@ -3934,7 +3974,16 @@ mod tests {
             content: b"x".to_vec(),
         }];
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &evil, None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "m",
+                None,
+                None,
+                &evil,
+                None,
+                None,
+            )
             .await
             .expect_err("traversal name must be rejected");
         assert!(err.to_string().contains("bad borrowed material name"));
@@ -3945,7 +3994,16 @@ mod tests {
             content: vec![0u8; super::BORROWED_MATERIAL_MAX_FILE + 1],
         }];
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "m", None, None, &big, None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "m",
+                None,
+                None,
+                &big,
+                None,
+                None,
+            )
             .await
             .expect_err("oversize material must be rejected");
         assert!(err.to_string().contains("exceeds"));
@@ -4006,7 +4064,10 @@ mod tests {
                         }],
                         stop_reason: StopReason::EndTurn,
                         tool_calls: vec![],
-                        usage: TokenUsage { input_tokens: 1, output_tokens: 1 },
+                        usage: TokenUsage {
+                            input_tokens: 1,
+                            output_tokens: 1,
+                        },
                         media: None,
                     });
                 }
@@ -4022,8 +4083,11 @@ mod tests {
                 std::fs::write(d.join("report.md"), "# 报告\n正文").unwrap();
                 std::fs::create_dir_all(d.join("sub")).unwrap();
                 std::fs::write(d.join("sub/nested.txt"), "nested").unwrap();
-                std::fs::write(d.join("huge.bin"), vec![0u8; super::BORROWED_OUTPUT_MAX_FILE + 1])
-                    .unwrap();
+                std::fs::write(
+                    d.join("huge.bin"),
+                    vec![0u8; super::BORROWED_OUTPUT_MAX_FILE + 1],
+                )
+                .unwrap();
                 Ok(CompletionResponse {
                     content: vec![ContentBlock::Text {
                         text: "done".to_string(),
@@ -4031,7 +4095,10 @@ mod tests {
                     }],
                     stop_reason: StopReason::EndTurn,
                     tool_calls: vec![],
-                    usage: TokenUsage { input_tokens: 1, output_tokens: 1 },
+                    usage: TokenUsage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
                     media: None,
                 })
             }
@@ -4054,7 +4121,16 @@ mod tests {
         kernel.registry.register(entry).expect("register");
 
         let out = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "生成报告", None, None, &[], None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "生成报告",
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
             .await
             .expect("output turn should succeed");
 
@@ -4080,7 +4156,16 @@ mod tests {
 
         // 无素材轮也建 output/（提示段始终注入）——空产物时 files 为空即可。
         let out2 = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "再来一轮", None, None, &[], None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "再来一轮",
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
             .await
             .expect("second output turn should succeed");
         assert!(out2.files.is_empty());
@@ -4149,29 +4234,74 @@ mod tests {
 
         // 名单外身份 → 拒绝，且不产生台账计数。
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "hi", None, None, &[], None, Some("stranger"))
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "hi",
+                None,
+                None,
+                &[],
+                None,
+                Some("stranger"),
+            )
             .await
             .expect_err("outsider must be rejected");
         assert!(err.to_string().contains("not allowed to borrow"));
 
         // 名单内身份：第 1、2 轮通过（上限 2），第 3 轮触发限流。
         kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "1", None, None, &[], None, Some("friend-a"))
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "1",
+                None,
+                None,
+                &[],
+                None,
+                Some("friend-a"),
+            )
             .await
             .expect("turn 1 within limit");
         kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "2", None, None, &[], None, Some("friend-a"))
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "2",
+                None,
+                None,
+                &[],
+                None,
+                Some("friend-a"),
+            )
             .await
             .expect("turn 2 at limit");
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "3", None, None, &[], None, Some("friend-a"))
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "3",
+                None,
+                None,
+                &[],
+                None,
+                Some("friend-a"),
+            )
             .await
             .expect_err("turn 3 must hit rate limit");
         assert!(err.to_string().contains("rate limit exceeded"));
 
         // 本地直连（borrower=None）不受名单门限制——但配额按 "local" 独立计。
         let out = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "local", None, None, &[], None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "local",
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
             .await
             .expect("local direct turn must bypass allowlist");
         assert!(!out.response.is_empty());
@@ -4213,7 +4343,16 @@ mod tests {
         kernel.registry.register(entry).expect("register");
 
         let err = kernel
-            .run_borrowed_turn(agent_id, SessionTicket::empty(None), "hi", None, None, &[], None, None)
+            .run_borrowed_turn(
+                agent_id,
+                SessionTicket::empty(None),
+                "hi",
+                None,
+                None,
+                &[],
+                None,
+                None,
+            )
             .await
             .expect_err("disabled borrowing must reject even local turns");
         assert!(err.to_string().contains("borrowing is disabled"));

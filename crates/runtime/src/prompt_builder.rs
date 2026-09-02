@@ -602,10 +602,9 @@ pub fn build_tools_section(granted_tools: &[String]) -> String {
         "## Your Tools\n\
          You have access to these capabilities. This is your starting tool set.\n\
          \n\
-         **IMPORTANT**: You can ONLY use tools listed below OR tools discovered via `tool_search`. \
-         Do NOT guess or invent tool names. If you need a capability not listed below, you MUST \
-         call `tool_search(\"what you need\")` first — it returns the tool's name, description, \
-         and parameter schema. Then you can call that tool directly.\n",
+         **IMPORTANT**: You can ONLY use tools listed below — do NOT guess or invent \
+         tool names. If you need a capability not listed, ask the human to provision it \
+         (`ag commands` lists the system's installed command surface).\n",
     );
     for (category, tools) in &groups {
         out.push_str(&format!("\n**{}**: ", capitalize(category)));
@@ -661,8 +660,8 @@ pub fn build_memory_section(memories: &[(String, String)], tree_hits: &[TreeMemo
         out.push('\n');
     }
 
-    // Tool usage guide — memory_tree is available via tool_search when needed
-    out.push_str("`memory_tree` is available for querying past conversation/email/document history. Use `tool_search(\"memory_tree\")` to discover it when the user asks about past interactions.\n");
+    // Tool usage guide — memory_tree is in the core tool surface when provisioned
+    out.push_str("`memory_tree` is available for querying past conversation/email/document history — call it directly when the user asks about past interactions.\n");
 
     // Legacy flat memories (if any)
     if !memories.is_empty() {
@@ -906,15 +905,15 @@ const SAFETY_SECTION: &str = "\
 /// Tells the clone about self-improvement tools so it can learn and adapt autonomously.
 ///
 /// Contract: a matched flow is a **tool prescription**. Use declared tools first;
-/// explore with tool_search only when the path is unknown; on success, write proven
+/// try other listed tools only when the path is unknown; on success, write proven
 /// tools + steps back into the flow via flow_update (self-evolving flows).
 const EVOLUTION_PROMPT: &str = "\
 ## 自我进化
 你拥有自我学习和改进的能力。**Flow = 工具处方 + 执行纪律**：frontmatter 的 tools 会在匹配时自动注入，body 是硬规则与步骤。
 
 ### 工具路径（优先顺序）
-1. **已匹配 flow**：只用该 flow 声明的 tools + body 步骤。**禁止**对声明内工具再 `tool_search`。
-2. **路径未知**（无匹配 flow / 声明不够）：才用 `tool_search` 或试探；这是例外，不是常态。
+1. **已匹配 flow**：只用该 flow 声明的 tools + body 步骤。声明内的工具已直接可用，不需要再发现。
+2. **路径未知**（无匹配 flow / 声明不够）：用已列出的工具试探；这是例外，不是常态。
 3. **探索成功后必须固化**：用 `flow_update` 把**真正管用的工具名**写进 frontmatter `tools`，把硬规则/步骤写进 body。下次直接走处方，不再找工具。
    - `flow_update(name, tools=[...], body=\"...\")` — tools 与 body 可只改其一；**只能改 workspace 私有 flow，系统共享 flow 只读**（不再 copy-on-write，需人手工更新或用 flow_create 建私有变体）
 

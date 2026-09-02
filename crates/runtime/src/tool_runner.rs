@@ -4,9 +4,9 @@
 
 use crate::mcp;
 use crate::tool_context::ToolContext;
-use tracing::{debug, warn};
 use carrier_types::tool::{ToolDefinition, ToolResult};
 use carrier_types::tool_compat::normalize_tool_name;
+use tracing::{debug, warn};
 
 tokio::task_local! {
     /// Tracks the current inter-agent call depth within a task.
@@ -57,7 +57,6 @@ pub async fn execute_tool(
         memory: _,
         caller_agent_id,
         mcp_connections,
-        fetch_engine: _,
         allowed_env_vars: _,
         workspace_root,
         brain: _,
@@ -121,7 +120,7 @@ pub async fn execute_tool(
         return ToolResult {
             tool_use_id: tool_use_id.to_string(),
             content: format!(
-                "Permission denied: '{tool_name}' 不在当前 flow 声明的工具集中（flow tools 硬沙箱）。请只使用 flow `tools:` 声明的工具来完成本任务——不要 tool_search 或调用 flow 未声明的工具。"
+                "Permission denied: '{tool_name}' 不在当前 flow 声明的工具集中（flow tools 硬沙箱）。请只使用 flow `tools:` 声明的工具来完成本任务——不要调用 flow 未声明的工具。"
             ),
             is_error: true,
         };
@@ -152,8 +151,11 @@ pub async fn execute_tool(
         if let Some(patterns) = flow_shell_allow {
             if !patterns.is_empty() {
                 let command = input_ref["command"].as_str().unwrap_or("");
-                if !carrier_types::flow::command_matches_flow_shell_allow(command, patterns, workspace_root)
-                {
+                if !carrier_types::flow::command_matches_flow_shell_allow(
+                    command,
+                    patterns,
+                    workspace_root,
+                ) {
                     warn!(
                         tool_name,
                         command = %crate::str_utils::safe_truncate_str(command, 80),
@@ -479,7 +481,6 @@ mod tests {
             memory: None,
             caller_agent_id: None,
             mcp_connections: None,
-            fetch_engine: None,
             allowed_env_vars: None,
             workspace_root: None,
             brain: None,

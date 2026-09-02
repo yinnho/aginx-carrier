@@ -9,11 +9,11 @@ use crate::llm_driver::{
     Brain, CompletionRequest, CompletionResponse, LlmDriver, LlmError, StreamEvent,
 };
 use crate::llm_errors;
+use carrier_types::error::{CarrierError, CarrierResult};
+use carrier_types::message::{ContentBlock, Message, MessageContent, Role, TurnSummary};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
-use carrier_types::error::{CarrierError, CarrierResult};
-use carrier_types::message::{ContentBlock, Message, MessageContent, Role, TurnSummary};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -75,9 +75,6 @@ pub(in crate::agent_loop) fn pick_modality(
     );
     default_modality.to_string()
 }
-
-/// Tool search recall limit (stage 1: how many candidates to retrieve).
-pub(in crate::agent_loop) const TOOL_SEARCH_RECALL_LIMIT: usize = 10;
 
 /// Timeout for individual tool executions (seconds).
 /// Raised from 60s to 120s for browser automation and long-running builds.

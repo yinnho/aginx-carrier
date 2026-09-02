@@ -7,11 +7,11 @@ use async_trait::async_trait;
 use carrier_runtime::kernel_handle::{self, KernelHandle};
 use carrier_runtime::llm_driver::CompletionRequest;
 use carrier_runtime::memory_handle::MemoryHandle;
-use std::sync::Arc;
 use carrier_types::agent::{AgentId, AgentManifest};
 use carrier_types::error::{CarrierError, CarrierResult};
 use carrier_types::event::*;
 use carrier_types::message::{ContentBlock, Message, MessageContent, Role};
+use std::sync::Arc;
 
 /// Well-known agent ID for system/kernel-originated events.
 pub const SYSTEM_AGENT_ID: AgentId = AgentId(uuid::Uuid::nil());
@@ -343,7 +343,9 @@ impl KernelHandle for CarrierKernel {
         sender_id: Option<&str>,
         job_json: serde_json::Value,
     ) -> CarrierResult<String> {
-        use carrier_types::scheduler::{CronAction, CronDelivery, CronJob, CronJobId, CronSchedule};
+        use carrier_types::scheduler::{
+            CronAction, CronDelivery, CronJob, CronJobId, CronSchedule,
+        };
 
         let name = job_json["name"]
             .as_str()
@@ -643,7 +645,10 @@ impl KernelHandle for CarrierKernel {
             .map_err(|e| CarrierError::Network(format!("deliver_content: {e}")))
     }
 
-    fn get_toolset_tools(&self, toolset_name: &str) -> Option<Vec<carrier_types::tool::ToolDefinition>> {
+    fn get_toolset_tools(
+        &self,
+        toolset_name: &str,
+    ) -> Option<Vec<carrier_types::tool::ToolDefinition>> {
         let registry = self.plugins.toolset_registry.read().ok()?;
 
         // Resolve the registry key — try direct match first, then normalize-matching
@@ -798,7 +803,7 @@ impl KernelHandle for CarrierKernel {
             query = query,
             results = scored.len(),
             total_candidates = count,
-            "tool_search executed"
+            "tool catalog search executed"
         );
         scored.into_iter().map(|(_, ts, def)| (ts, def)).collect()
     }
@@ -1066,7 +1071,9 @@ impl CarrierKernel {
             if let Some(parent) = self_growth_flow.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            if let Err(e) = std::fs::write(&self_growth_flow, carrier_clone::DEFAULT_SELF_GROWTH_FLOW) {
+            if let Err(e) =
+                std::fs::write(&self_growth_flow, carrier_clone::DEFAULT_SELF_GROWTH_FLOW)
+            {
                 tracing::warn!(name = %clone_name, error = %e, "failed to seed default self-growth flow");
             }
         }
@@ -1127,7 +1134,8 @@ impl CarrierKernel {
             Some(t) => (t.description.clone(), t.version.clone()),
             None => (String::new(), String::new()),
         };
-        if let Err(e) = crate::aginx_net::register_clone_default(&agent_name, &display_name, &desc, &ver)
+        if let Err(e) =
+            crate::aginx_net::register_clone_default(&agent_name, &display_name, &desc, &ver)
         {
             tracing::warn!(name = %agent_name, error = %e, "aginx registration failed (clone still installed)");
         }

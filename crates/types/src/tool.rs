@@ -64,7 +64,7 @@ impl PermissionLevel {
             // None — pure queries, no side effects
             "session_summarize"
             | "knowledge_list" | "knowledge_read" | "flow_load"
-            | "tool_search" | "agent_find" | "agent_list"
+            | "agent_find" | "agent_list"
             | "train_read" | "train_list" | "train_knowledge_list"
             | "train_knowledge_read" | "train_evaluate" | "user_profile"
             | "task_list" | "schedule_list" | "cron_list"
@@ -503,10 +503,9 @@ impl From<&str> for PluginToolError {
 
 /// Core tool names always included in `CompletionRequest.tools`.
 ///
-/// These are the bootstrap tools every agent gets. Other tools are discovered
-/// at runtime via `tool_search` when the LLM needs them.
+/// These are the bootstrap tools every agent gets. （M31 D3 批1 起 tool_search
+/// 退役——发现面走 `ag commands`；未列出的工具按 per-agent manifest 注入。）
 pub const CORE_TOOL_NAMES: &[&str] = &[
-    "tool_search",
     "flow_load",
     "flow_create",
     "flow_update",
@@ -518,7 +517,7 @@ pub const CORE_TOOL_NAMES: &[&str] = &[
     // first-class clone behavior (server = evolution subject). Without this in
     // the assembled core set, bare interactive turns genuinely can only
     // add/read/list (08-21 86bus: "只能增不能改" complaint) and glm won't know
-    // to tool_search for a tool name it has never seen.
+    // to ask for a tool it has never seen.
     "knowledge_update",
     "file_read",
     "file_list",

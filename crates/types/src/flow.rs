@@ -311,10 +311,10 @@ pub const META_FLOW_SHELL_ALLOW: &str = "flow_shell_allow";
 pub const META_FLOW_DENY_TOOLS: &str = "flow_deny_tools";
 /// Hard tool allow-list for this turn (flow `tools:` sandbox): when a matched
 /// flow declares a non-empty `tools:` set, the agent may only call tools in
-/// that set ∪ its legit base toolset (core + api + subagent). `tool_search` is
-/// filtered to this set and `tool_runner` denies calls outside it. Stamped as
-/// the assembled tool names at flow-load time (frozen — `tool_search` cannot
-/// widen it by discovering out-of-set tools).
+/// that set ∪ its legit base toolset (core + api + subagent).
+/// `tool_runner` denies calls outside it. Stamped as
+/// the assembled tool names at flow-load time (frozen — discovery cannot
+/// widen it by surfacing out-of-set tools).
 pub const META_FLOW_ALLOWED_TOOLS: &str = "flow_allowed_tools";
 /// Set when a flow or subagent declared `max_iterations` (not the AutonomousConfig default).
 pub const META_MAX_ITERATIONS_DECLARED: &str = "max_iterations_declared";

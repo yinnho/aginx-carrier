@@ -5,13 +5,12 @@ use crate::llm_driver::Brain;
 use crate::mcp::McpConnection;
 use crate::memory_handle::MemoryHandle;
 use crate::process_manager::ProcessManager;
-use crate::web_fetch::WebFetchEngine;
-use dashmap::DashMap;
-use std::path::Path;
-use std::sync::Arc;
 use carrier_types::agent::SubagentConfig;
 use carrier_types::config::ExecPolicy;
 use carrier_types::tool::PermissionLevel;
+use dashmap::DashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 /// Environment context passed to every tool execution.
 ///
@@ -26,7 +25,6 @@ pub struct ToolContext<'a> {
     pub memory: Option<&'a Arc<dyn MemoryHandle>>,
     pub caller_agent_id: Option<&'a str>,
     pub mcp_connections: Option<&'a DashMap<String, McpConnection>>,
-    pub fetch_engine: Option<&'a WebFetchEngine>,
     pub allowed_env_vars: Option<&'a [String]>,
     pub workspace_root: Option<&'a Path>,
     pub brain: Option<&'a Arc<dyn Brain>>,
@@ -52,7 +50,7 @@ pub struct ToolContext<'a> {
     /// Tools blocked for this turn by the matched flow's `deny_tools`.
     pub flow_deny_tools: Option<&'a [String]>,
     /// Hard allow-list for this turn when the matched flow declares `tools:`.
-    /// `tool_runner` denies calls outside this set; `tool_search` filters to it.
+    /// `tool_runner` denies calls outside this set.
     /// Frozen at flow-load (see `META_FLOW_ALLOWED_TOOLS`).
     pub flow_allowed_tools: Option<&'a [String]>,
 }

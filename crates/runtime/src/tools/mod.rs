@@ -4,10 +4,10 @@
 //! (for LLM tool schemas) and execution (the actual logic).
 
 pub mod a2a;
+pub mod agb_bridge;
 pub mod agent;
 pub mod agent_mgmt;
 pub mod automation;
-pub mod browser;
 pub mod collaboration;
 pub mod data_analyze;
 pub mod document;
@@ -21,44 +21,21 @@ pub mod misc;
 pub mod scheduling;
 pub mod shell;
 pub mod sqlite;
-pub mod toolset;
 pub mod training;
-pub mod web_fetch;
-pub mod web_search;
 
 use crate::kernel_handle::KernelHandle;
 use crate::tool_context::ToolContext;
 use async_trait::async_trait;
+use carrier_types::error::{CarrierError, CarrierResult};
+use carrier_types::tool::{PermissionLevel, ToolDefinition};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use carrier_types::error::{CarrierError, CarrierResult};
-use carrier_types::tool::{PermissionLevel, ToolDefinition};
 
 // ---------------------------------------------------------------------------
-// Shared AginBrowser helpers (used by browser.rs and web_search.rs)
+// AginBrowser 客户端 helpers 已随实现整体搬进 `agb` CLI（M31 D3 批1）。
+// 工具面见 agb_bridge.rs；配置键仍是 AGINXBROWSER_URL（~/.aginx/carrier/.env）。
 // ---------------------------------------------------------------------------
-
-/// Default AginBrowser endpoint. Override via `AGINXBROWSER_URL` env var.
-pub(crate) const AGINXBROWSER_DEFAULT_URL: &str = "http://127.0.0.1:8089";
-
-/// Default timeout for AginBrowser HTTP requests (seconds).
-pub(crate) const AGINXBROWSER_TIMEOUT_SECS: u64 = 60;
-
-/// Read the AginBrowser URL from `AGINXBROWSER_URL` env var.
-/// Returns `None` if not set or empty (e.g. web_search disables itself).
-pub(crate) fn aginxbrowser_url_opt() -> Option<String> {
-    // carrier_types::env::get_env so ~/.aginx/carrier/.env values take effect (load_dotenv
-    // populates ENV_OVERRIDES, not std::env). Falls back to std::env::var for
-    // systemd Environment= configs. Same root-cause fix as aginx_memory_url_opt.
-    carrier_types::env::get_env("AGINXBROWSER_URL").filter(|s| !s.is_empty())
-}
-
-/// Read the AginBrowser URL from `AGINXBROWSER_URL` env var.
-/// Returns the default URL if not set (e.g. browser_* tools are always enabled).
-pub(crate) fn aginxbrowser_url() -> String {
-    aginxbrowser_url_opt().unwrap_or_else(|| AGINXBROWSER_DEFAULT_URL.to_string())
-}
 
 /// A category of related tools.
 ///
@@ -96,17 +73,16 @@ pub trait ToolModule: Send + Sync {
 }
 
 /// All built-in tool modules in dispatch order.
-pub fn builtin_modules(cli_exec_config: carrier_types::config::CliExecConfig) -> Vec<Box<dyn ToolModule>> {
+pub fn builtin_modules(
+    cli_exec_config: carrier_types::config::CliExecConfig,
+) -> Vec<Box<dyn ToolModule>> {
     let mut modules: Vec<Box<dyn ToolModule>> = vec![
         Box::new(filesystem::FilesystemTools),
         Box::new(document::DocumentTools),
         Box::new(sqlite::SqliteTools),
         Box::new(shell::ShellTools),
-        Box::new(browser::BrowserTools),
-        Box::new(web_fetch::WebFetchModule),
-        Box::new(web_search::WebSearchTools),
+        Box::new(agb_bridge::AgbBridge),
         Box::new(misc::MiscTools),
-        Box::new(toolset::ToolSearchTools),
         Box::new(knowledge::KnowledgeTools),
         Box::new(kv::KvTools),
         Box::new(media::MediaTools),

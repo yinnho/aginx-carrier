@@ -7,11 +7,11 @@
 use super::ToolModule;
 use crate::tool_context::ToolContext;
 use async_trait::async_trait;
+use carrier_types::error::{CarrierError, CarrierResult};
+use carrier_types::tool::ToolDefinition;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use carrier_types::error::{CarrierError, CarrierResult};
-use carrier_types::tool::ToolDefinition;
 
 /// Knowledge, skill, patch, evaluation, and session tools.
 pub struct KnowledgeTools;
@@ -134,7 +134,7 @@ impl ToolModule for KnowledgeTools {
             },
             ToolDefinition {
                 name: "flow_create".to_string(),
-                description: "Create a new flow in the workspace flows/ directory. Flows are tool prescriptions: frontmatter tools: are auto-injected when the flow matches; body is the hard workflow. Prefer declaring concrete tool names in tools (not tool_search).".to_string(),
+                description: "Create a new flow in the workspace flows/ directory. Flows are tool prescriptions: frontmatter tools: are auto-injected when the flow matches; body is the hard workflow. Prefer declaring concrete tool names in tools (the flow injection is the only discovery path).".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -143,7 +143,7 @@ impl ToolModule for KnowledgeTools {
                         "tools": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Tool names this flow needs (e.g. [\"file_read\", \"file_write\", \"web_search\"]). Injected automatically when the flow matches — do not rely on tool_search for these."
+                            "description": "Tool names this flow needs (e.g. [\"file_read\", \"file_write\", \"web_search\"]). Injected automatically when the flow matches — these are guaranteed present, no discovery needed."
                         },
                         "toolsets": {
                             "type": "array",
@@ -157,7 +157,7 @@ impl ToolModule for KnowledgeTools {
             },
             ToolDefinition {
                 name: "flow_update".to_string(),
-                description: "Update an existing PRIVATE flow (body and/or tools: frontmatter) to固化 a proven tool path so next runs inject it without tool_search. Only workspace-private flows can be updated; shared system flows are READ-ONLY (no copy-on-write) — request a human to update shared flows, or use flow_create for a clone-specific variant.".to_string(),
+                description: "Update an existing PRIVATE flow (body and/or tools: frontmatter) to固化 a proven tool path so next runs inject it without trial-and-error. Only workspace-private flows can be updated; shared system flows are READ-ONLY (no copy-on-write) — request a human to update shared flows, or use flow_create for a clone-specific variant.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -1069,8 +1069,14 @@ async fn tool_knowledge_remove(
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    let _ =
-        carrier_lifecycle::version::record_version(root, "delete", &name, before.as_deref(), None, "tool");
+    let _ = carrier_lifecycle::version::record_version(
+        root,
+        "delete",
+        &name,
+        before.as_deref(),
+        None,
+        "tool",
+    );
     let _ = carrier_lifecycle::evolution::update_memory_index(root);
     Ok(format!("Knowledge removed: {name}"))
 }
@@ -1184,7 +1190,6 @@ mod apply_patch_routing_tests {
             memory: None,
             caller_agent_id: None,
             mcp_connections: None,
-            fetch_engine: None,
             allowed_env_vars: None,
             workspace_root: Some(workspace),
             brain: None,

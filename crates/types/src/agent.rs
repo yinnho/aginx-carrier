@@ -360,8 +360,8 @@ pub struct AgentManifest {
     #[serde(default, deserialize_with = "crate::serde_compat::vec_lenient")]
     pub mcp_servers: Vec<String>,
     /// Maximum tool permission level. Tools above this level are hidden from
-    /// tool_search and flow discovery mode. Dangerous-level tools are never
-    /// discoverable via search regardless. Default: Write.
+    /// flow discovery mode. Dangerous-level tools are never
+    /// discoverable regardless. Default: Write.
     #[serde(default = "crate::tool::PermissionLevel::default_max_tool_level")]
     pub max_tool_level: crate::tool::PermissionLevel,
     /// Run an LLM-based intent classifier on every inbound message to decide

@@ -34,20 +34,19 @@ use crate::llm_driver::{Brain, CompletionRequest, CompletionResponse, LlmDriver,
 
 use crate::mcp::McpConnection;
 use crate::text_tool_recovery::detect_text_tool_mentions;
-use crate::web_fetch::WebFetchEngine;
 use carrier_memory::session::Session;
 use carrier_memory::MemorySubstrate;
 use carrier_types::agent::AgentManifest;
 use carrier_types::error::{CarrierError, CarrierResult};
 use carrier_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 // Re-export for tests (via `use super::*`)
+#[allow(unused_imports)]
+pub(crate) use carrier_types::message::MessageContent;
+use carrier_types::tool::ToolDefinition;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
-#[allow(unused_imports)]
-pub(crate) use carrier_types::message::MessageContent;
-use carrier_types::tool::ToolDefinition;
 
 // Re-export constants that external modules (tests) reference.
 pub use helpers::TOOL_LONG_TIMEOUT_NAMES;
@@ -162,7 +161,6 @@ pub async fn run_agent_loop(
     kernel: Option<Arc<dyn KernelHandle>>,
     stream_tx: Option<mpsc::Sender<StreamEvent>>,
     mcp_connections: Option<&dashmap::DashMap<String, McpConnection>>,
-    fetch_engine: Option<&WebFetchEngine>,
     workspace_root: Option<&Path>,
     on_phase: Option<&PhaseCallback>,
     hooks: Option<&crate::hooks::HookRegistry>,
@@ -191,7 +189,6 @@ pub async fn run_agent_loop(
         kernel,
         stream_tx,
         mcp_connections,
-        fetch_engine,
         workspace_root,
         on_phase,
         hooks,
@@ -223,7 +220,6 @@ pub async fn run_agent_loop_streaming(
     kernel: Option<Arc<dyn KernelHandle>>,
     stream_tx: mpsc::Sender<StreamEvent>,
     mcp_connections: Option<&dashmap::DashMap<String, McpConnection>>,
-    fetch_engine: Option<&WebFetchEngine>,
     workspace_root: Option<&Path>,
     on_phase: Option<&PhaseCallback>,
     hooks: Option<&crate::hooks::HookRegistry>,
@@ -247,7 +243,6 @@ pub async fn run_agent_loop_streaming(
         kernel,
         Some(stream_tx),
         mcp_connections,
-        fetch_engine,
         workspace_root,
         on_phase,
         hooks,
@@ -279,7 +274,6 @@ async fn run_agent_loop_impl(
     kernel: Option<Arc<dyn KernelHandle>>,
     stream_tx: Option<mpsc::Sender<StreamEvent>>,
     mcp_connections: Option<&dashmap::DashMap<String, McpConnection>>,
-    fetch_engine: Option<&WebFetchEngine>,
     workspace_root: Option<&Path>,
     on_phase: Option<&PhaseCallback>,
     hooks: Option<&crate::hooks::HookRegistry>,
@@ -425,7 +419,6 @@ async fn run_agent_loop_impl(
         loaded_flow_elevated_tools: Vec::new(),
         kernel,
         mcp_connections,
-        fetch_engine,
         workspace_root,
         process_manager,
         context_budget,
@@ -677,7 +670,7 @@ fn select_modality(ctx: &mut LoopContext<'_>) -> String {
 
 async fn call_llm(ctx: &mut LoopContext<'_>, modality: &str) -> CarrierResult<CompletionResponse> {
     // Dedup tools by name before every LLM call. Duplicates can arise when
-    // text-tool recovery / tool_search re-adds tools already injected by a
+    // text-tool recovery re-adds tools already injected by a
     // flow; OpenAI-compatible APIs then reject with
     // "function name X is duplicated".
     let tools_for_llm = {
@@ -940,7 +933,6 @@ async fn dispatch(
                 ctx.on_phase,
                 &ctx.stream_tx,
                 ctx.mcp_connections,
-                ctx.fetch_engine,
                 ctx.workspace_root,
                 ctx.process_manager,
                 &ctx.context_budget,
@@ -952,8 +944,6 @@ async fn dispatch(
                 &mut ctx.state.any_tools_executed,
                 &mut ctx.state.tools_this_iter,
                 &mut ctx.state.recent_tool_calls,
-                &mut ctx.tools_owned,
-                &mut ctx.discovered_tool_names,
                 &mut ctx.loaded_flows,
                 &mut ctx.loaded_flow_shell_allow,
                 &mut ctx.loaded_flow_elevated_tools,

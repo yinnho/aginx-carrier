@@ -12,7 +12,6 @@ use crate::context_budget::ContextBudget;
 use crate::kernel_handle::KernelHandle;
 use crate::llm_driver::{Brain, LlmDriver, StreamEvent};
 use crate::mcp::McpConnection;
-use crate::web_fetch::WebFetchEngine;
 use carrier_memory::session::Session;
 use carrier_memory::MemorySubstrate;
 use carrier_types::agent::AgentManifest;
@@ -67,7 +66,6 @@ pub(super) struct LoopContext<'a> {
     // ---- Kernel & external ----
     pub kernel: Option<Arc<dyn KernelHandle>>,
     pub mcp_connections: Option<&'a dashmap::DashMap<String, McpConnection>>,
-    pub fetch_engine: Option<&'a WebFetchEngine>,
     pub workspace_root: Option<&'a Path>,
     pub process_manager: Option<&'a crate::process_manager::ProcessManager>,
     pub context_budget: ContextBudget,

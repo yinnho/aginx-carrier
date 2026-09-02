@@ -6,8 +6,10 @@
 use std::path::Path;
 
 use anyhow::Result;
+use carrier_types::agent::{
+    AgentManifest, CloneSource, ManifestCapabilities, ModelConfig, ResourceQuota,
+};
 use tracing::debug;
-use carrier_types::agent::{AgentManifest, CloneSource, ManifestCapabilities, ModelConfig, ResourceQuota};
 
 use crate::loader::{parse_template_manifest_lenient, TemplateManifest};
 
@@ -35,12 +37,11 @@ pub fn build_manifest_from_workspace(
     let knowledge_files = collect_knowledge_files(workspace);
 
     // 5. Build tools list from flow-declared tools + evolution defaults
-    // Core tools (file_read, tool_search, etc.) are auto-loaded at runtime and
+    // Core tools (file_read, flow_load, etc.) are auto-loaded at runtime and
     // should NOT be listed in capabilities.tools. MCP tools (mcp_*) are loaded
     // separately via mcp_servers config. So we only collect non-core builtins.
     let core_tools: &[&str] = &[
         "session_summarize",
-        "tool_search",
         "flow_load",
         "knowledge_read",
         "knowledge_list",
