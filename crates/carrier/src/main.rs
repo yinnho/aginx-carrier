@@ -5,6 +5,7 @@
 
 mod acp;
 mod agent_cmd;
+mod api_cmd;
 mod cron_cmd;
 mod notify;
 mod probe;
@@ -63,6 +64,12 @@ enum Command {
     Tool {
         /// 工具名（tool_cmd::TOOL_NAMES）
         name: String,
+    },
+    /// 声明式 API 工具面（M34）：api_tools 执行链单真源在此——具名调用
+    /// （resolve/HMAC/extract）、通用直通、注册落盘、cron 一跳。
+    Api {
+        #[command(subcommand)]
+        action: api_cmd::ApiAction,
     },
     /// 显示版本与本地数据目录等信息
     Info,
@@ -268,6 +275,7 @@ fn main() -> anyhow::Result<()> {
         Command::Acp { clone, session } => acp::run(clone, session)?,
         Command::Sys { action } => sys_cmd::run(action)?,
         Command::Tool { name } => tool_cmd::run(name)?,
+        Command::Api { action } => api_cmd::run(action)?,
         Command::Probe { url } => probe::run(url)?,
         Command::Notify { text, to } => notify::run(text, to)?,
         Command::QrLogin { bot_id, bind_agent } => {
