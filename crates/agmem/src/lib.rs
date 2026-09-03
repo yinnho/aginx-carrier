@@ -147,9 +147,14 @@ pub fn ctx_of(input: &Value, fallback: AgmemCtx) -> AgmemCtx {
     }
 }
 
-/// substrate 库路径：显式 --db > _ctx.db_path > _ctx.home_dir 推导 > $HOME
-/// 推导。推导结果与守护同库（config.data_dir/carrier.db，默认
-/// `{carrier home}/data`，见 kernel.rs boot；notify.rs 的 DB 直读同款）。
+/// substrate 库路径：显式 --db > _ctx.db_path > `_ctx.home_dir` 推导 >
+/// `$HOME` 推导。两种推导的**语义不同**（M35d 设备探针实证的坑：桥把
+/// carrier home 原样塞进来，`.aginx/carrier` 拼了两遍打不开库）：
+/// 桥注入的 home_dir 是 carrier home（runtime ToolContext.home_dir =
+/// config.home_dir；agf 的 sender_data_dir 同款语义），布局
+/// `{home}/data/carrier.db`；`$HOME` 是用户主目录，布局
+/// `{HOME}/.aginx/carrier/data/carrier.db`。默认布局下两者同库——
+/// 守护开的就是 config.data_dir（carrier home + data）下的 carrier.db。
 pub fn db_path_of(ctx: &AgmemCtx, db_flag: Option<&PathBuf>) -> PathBuf {
     if let Some(p) = db_flag {
         return p.clone();
@@ -157,12 +162,18 @@ pub fn db_path_of(ctx: &AgmemCtx, db_flag: Option<&PathBuf>) -> PathBuf {
     if let Some(p) = &ctx.db_path {
         return p.clone();
     }
-    let home = ctx
-        .home_dir
-        .clone()
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+    if let Some(home) = &ctx.home_dir {
+        // 桥注入 = carrier home（data/ 直接挂在它下面）
+        return home.join("data").join("carrier.db");
+    }
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/home"));
-    home.join(".aginx").join("carrier").join("data").join("carrier.db")
+    user_home
+        .join(".aginx")
+        .join("carrier")
+        .join("data")
+        .join("carrier.db")
 }
 
 /// workspace 根：显式 --workspace > _ctx.workspace_root > 无（knowledge
@@ -256,10 +267,10 @@ mod tests {
             c.workspace_root,
             Some(PathBuf::from("/var/lib/ws/mo"))
         );
-        // db 路径随之指向该 HOME 的 carrier.db
+        // db 路径按 carrier home 布局推导（桥注入语义；M35d 设备实证）
         assert_eq!(
             db_path_of(&c, None),
-            PathBuf::from("/tmp/h/.aginx/carrier/data/carrier.db")
+            PathBuf::from("/tmp/h/data/carrier.db")
         );
     }
 
