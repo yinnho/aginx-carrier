@@ -384,9 +384,9 @@ impl ApiExecutor {
 
     fn resolve_auth(config: &ApiToolDef) -> Option<String> {
         if let Some(ref env_name) = config.auth_env {
-            // carrier_types::env::get_env（先读 ~/.aginx/carrier/.env 的
-            // ENV_OVERRIDES 再 std::env）——只 std::env 会漏 .env 里的键。
-            carrier_types::env::get_env(env_name).filter(|s| !s.is_empty())
+            // carrier_types::env::get_secret（env/.env 先，agsecretd sidecar
+            // 补位 — M36）——只 std::env 会漏 .env 和 sidecar 里的键。
+            carrier_types::env::get_secret(env_name).filter(|s| !s.is_empty())
         } else {
             None
         }
@@ -712,13 +712,13 @@ impl ApiExecutor {
         }
 
         if let Some(ref hmac_def) = config.hmac {
-            let key_id = carrier_types::env::get_env(&hmac_def.key_id_env).ok_or_else(|| {
+            let key_id = carrier_types::env::get_secret(&hmac_def.key_id_env).ok_or_else(|| {
                 CarrierError::Internal(format!(
                     "{}: hmac.key_id_env '{}' not configured",
                     config.name, hmac_def.key_id_env
                 ))
             })?;
-            let secret = carrier_types::env::get_env(&hmac_def.secret_env).ok_or_else(|| {
+            let secret = carrier_types::env::get_secret(&hmac_def.secret_env).ok_or_else(|| {
                 CarrierError::Internal(format!(
                     "{}: hmac.secret_env '{}' not configured",
                     config.name, hmac_def.secret_env
@@ -1305,9 +1305,9 @@ fn build_cron_url(tool: &ApiToolDef) -> String {
         }
     }
     if let (Some(ref auth_env), Some(ref auth_param)) = (&tool.auth_env, &tool.auth_param) {
-        // carrier_types::env::get_env 先读 ~/.aginx/carrier/.env；
-        // 只 std::env 会漏 .env 的键。
-        if let Some(key) = carrier_types::env::get_env(auth_env) {
+        // carrier_types::env::get_secret 先读 env/.env，sidecar 补位（M36）；
+        // 只 std::env 会漏 .env 和 sidecar 的键。
+        if let Some(key) = carrier_types::env::get_secret(auth_env) {
             if !key.is_empty() {
                 query_parts.push(format!(
                     "{}={}",

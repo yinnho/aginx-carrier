@@ -24,6 +24,7 @@ pub mod message;
 pub mod plugin;
 pub mod scheduler;
 pub mod serde_compat;
+pub mod sidecar;
 pub mod ssrf;
 pub mod taint;
 pub mod tool;

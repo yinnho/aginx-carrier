@@ -137,11 +137,12 @@ pub struct Brain {
 impl Brain {
     /// Create a new Brain from config. The single driver is created eagerly.
     pub fn new(config: BrainConfig) -> Result<Self, BrainError> {
-        // Resolve API key from the configured env var.
+        // Resolve API key: env first (incl. ~/.aginx/carrier/.env), then the
+        // agsecretd sidecar leg (M36 — DECISIONS §9 on the OS side).
         let api_key = if config.api_key_env.is_empty() {
             None
         } else {
-            carrier_types::env::get_env(&config.api_key_env)
+            carrier_types::env::get_secret(&config.api_key_env)
         };
 
         let driver_config = DriverConfig {
@@ -315,7 +316,7 @@ impl Brain {
     pub fn credentials_for(&self, _provider: &str) -> Option<carrier_types::brain::ProviderCredentials> {
         let mut env_vars = HashMap::new();
         if !self.config.api_key_env.is_empty() {
-            if let Some(val) = carrier_types::env::get_env(&self.config.api_key_env) {
+            if let Some(val) = carrier_types::env::get_secret(&self.config.api_key_env) {
                 env_vars.insert(self.config.api_key_env.clone(), val);
             }
         }

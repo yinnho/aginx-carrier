@@ -36,3 +36,20 @@ pub fn set_env_override(key: &str, value: &str) {
     let mut overrides = ENV_OVERRIDES.lock().unwrap();
     overrides.insert(key.to_string(), value.to_string());
 }
+
+/// Credential resolution with the secret-sidecar leg (M36, DECISIONS §9 on
+/// the OS side): env (overrides + process env, incl. `~/.aginx/carrier/.env`
+/// loaded at boot) first, then the agsecretd sidecar's `env` op as the
+/// gap-filler. Sidecar misses — absent daemon, denied peer, unmapped name —
+/// read as `None`, never as a hard error, so a host without the sidecar
+/// behaves exactly as before.
+///
+/// Use this wherever a config names an env var that holds a secret
+/// (`brain.api_key_env`, `api.hmac.secret_env`, `auth_env`, …); plain
+/// configuration lookups stay on [`get_env`].
+pub fn get_secret(key: &str) -> Option<String> {
+    if let Some(v) = get_env(key) {
+        return Some(v);
+    }
+    crate::sidecar::env_lookup(key)
+}
