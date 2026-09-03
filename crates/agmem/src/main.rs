@@ -235,9 +235,10 @@ fn main() -> anyhow::Result<()> {
 fn fallback_of(cli: &Cli) -> agmem::AgmemCtx {
     agmem::AgmemCtx {
         agent_id: cli.agent.clone(),
-        owner_id: cli.owner.clone(),
-        user_id: cli.user.clone(),
+        owner_id: Some(cli.owner.clone()),
+        user_id: Some(cli.user.clone()),
         home_dir: None,
+        db_path: None,
         workspace_root: None,
     }
 }

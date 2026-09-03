@@ -67,6 +67,7 @@ name = "agmem"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "carrier-lifecycle",
  "carrier-memory",
  "carrier-types",
  "chrono",

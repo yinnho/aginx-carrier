@@ -73,28 +73,45 @@ pub const TOOL_NAMES: &[&str] = &[
 ];
 
 /// kv/tree 域的身份三元组 + substrate 定位 + knowledge 域的 workspace。
+///
+/// owner/user 是 `Option`：桥注入的 `_ctx` 里显式 `null` = 上游
+/// `ctx.owner_id`/`ctx.sender_id` 为 None 的路径——kv 面此时回落 ""、
+/// tree 面回落 "default"/不过滤（与被搬的 runtime 模块逐字一致）。
 #[derive(Debug, Clone)]
 pub struct AgmemCtx {
     pub agent_id: String,
-    pub owner_id: String,
-    pub user_id: String,
+    pub owner_id: Option<String>,
+    pub user_id: Option<String>,
     /// substrate 所在 HOME（默认 $HOME；人面可用 --db 直给库路径）。
     pub home_dir: Option<PathBuf>,
+    /// 显式库路径覆盖（桥为 `memory.sqlite_path` 非默认时预留）。
+    pub db_path: Option<PathBuf>,
     /// knowledge/flows 面的 workspace 根（对齐 runtime
     /// ToolContext.workspace_root = 化身 manifest 的 workspace 路径）。
     pub workspace_root: Option<PathBuf>,
 }
 
-/// 人面默认身份。owner="default" 对齐 runtime memory.rs 的
-/// `ctx.owner_id.unwrap_or("default")`；agent="me" 对齐手机注册的主
-/// 化身；user="local" 标记"这是本机人手，不是任何渠道来信"。
+/// 人面默认身份。owner="default"/user="local" 是人面自己的域；agent="me"
+/// 对齐手机注册的主化身；user="local" 标记"这是本机人手，不是任何渠道
+/// 来信"。
 pub fn default_identity() -> AgmemCtx {
     AgmemCtx {
         agent_id: "me".to_string(),
-        owner_id: "default".to_string(),
-        user_id: "local".to_string(),
+        owner_id: Some("default".to_string()),
+        user_id: Some("local".to_string()),
         home_dir: None,
+        db_path: None,
         workspace_root: None,
+    }
+}
+
+/// `_ctx` 里的可选字符串字段：显式 null → None（桥传上游 None 路径），
+/// 字符串 → Some，缺席 → 回落 fallback。
+fn opt_field(c: &serde_json::Map<String, Value>, key: &str, fallback: &Option<String>) -> Option<String> {
+    match c.get(key) {
+        Some(Value::Null) => None,
+        Some(v) => v.as_str().map(String::from).or_else(|| fallback.clone()),
+        None => fallback.clone(),
     }
 }
 
@@ -103,36 +120,41 @@ pub fn ctx_of(input: &Value, fallback: AgmemCtx) -> AgmemCtx {
     let Some(c) = input.get("_ctx") else {
         return fallback;
     };
+    let c = c.as_object();
+    let get = |k: &str| c.and_then(|m| m.get(k));
     AgmemCtx {
-        agent_id: c
-            .get("agent_id")
+        agent_id: get("agent_id")
             .and_then(|v| v.as_str())
             .unwrap_or(&fallback.agent_id)
             .to_string(),
-        owner_id: c
-            .get("owner_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&fallback.owner_id)
-            .to_string(),
-        user_id: c
-            .get("user_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&fallback.user_id)
-            .to_string(),
-        home_dir: c
-            .get("home_dir")
+        owner_id: match c {
+            Some(m) => opt_field(m, "owner_id", &fallback.owner_id),
+            None => fallback.owner_id,
+        },
+        user_id: match c {
+            Some(m) => opt_field(m, "user_id", &fallback.user_id),
+            None => fallback.user_id,
+        },
+        home_dir: get("home_dir")
             .and_then(|v| v.as_str())
             .map(PathBuf::from),
-        workspace_root: c
-            .get("workspace_root")
+        db_path: get("db_path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from),
+        workspace_root: get("workspace_root")
             .and_then(|v| v.as_str())
             .map(PathBuf::from),
     }
 }
 
-/// substrate 库路径：显式 --db > _ctx.home_dir > $HOME。
+/// substrate 库路径：显式 --db > _ctx.db_path > _ctx.home_dir 推导 > $HOME
+/// 推导。推导结果与守护同库（config.data_dir/carrier.db，默认
+/// `{carrier home}/data`，见 kernel.rs boot；notify.rs 的 DB 直读同款）。
 pub fn db_path_of(ctx: &AgmemCtx, db_flag: Option<&PathBuf>) -> PathBuf {
     if let Some(p) = db_flag {
+        return p.clone();
+    }
+    if let Some(p) = &ctx.db_path {
         return p.clone();
     }
     let home = ctx
@@ -226,8 +248,8 @@ mod tests {
         });
         let c = ctx_of(&input, default_identity());
         assert_eq!(c.agent_id, "mo");
-        assert_eq!(c.owner_id, "o1");
-        assert_eq!(c.user_id, "u@im");
+        assert_eq!(c.owner_id, Some("o1".to_string()));
+        assert_eq!(c.user_id, Some("u@im".to_string()));
         assert_eq!(c.home_dir, Some(PathBuf::from("/tmp/h")));
         // workspace 随 _ctx 进来（桥注入化身 manifest 的 workspace 路径）
         assert_eq!(
@@ -239,6 +261,30 @@ mod tests {
             db_path_of(&c, None),
             PathBuf::from("/tmp/h/.aginx/carrier/data/carrier.db")
         );
+    }
+
+    #[test]
+    fn ctx_null_owner_user_maps_to_none_not_fallback() {
+        // 桥把上游 ctx.owner_id/sender_id 的 None 以显式 null 传入——
+        // 必须还原成 None（kv 面 → ""，tree 面 → "default"/不过滤），
+        // 不能错拿人面默认 default/local。
+        let input = json!({"_ctx": {"agent_id": "mo", "owner_id": null, "user_id": null}});
+        let c = ctx_of(&input, default_identity());
+        assert_eq!(c.owner_id, None);
+        assert_eq!(c.user_id, None);
+        // 缺席键才是回落人面默认
+        let c = ctx_of(&json!({"_ctx": {"agent_id": "mo"}}), default_identity());
+        assert_eq!(c.owner_id, Some("default".to_string()));
+        assert_eq!(c.user_id, Some("local".to_string()));
+    }
+
+    #[test]
+    fn ctx_db_path_overrides_home_derivation() {
+        let c = ctx_of(
+            &json!({"_ctx": {"home_dir": "/tmp/h", "db_path": "/tmp/x/custom.db"}}),
+            default_identity(),
+        );
+        assert_eq!(db_path_of(&c, None), PathBuf::from("/tmp/x/custom.db"));
     }
 
     #[test]
@@ -262,8 +308,8 @@ mod tests {
     fn ctx_of_falls_back_to_default_identity() {
         let c = ctx_of(&json!({"key": "k"}), default_identity());
         assert_eq!(c.agent_id, "me");
-        assert_eq!(c.owner_id, "default");
-        assert_eq!(c.user_id, "local");
+        assert_eq!(c.owner_id, Some("default".to_string()));
+        assert_eq!(c.user_id, Some("local".to_string()));
     }
 
     #[test]

@@ -9,8 +9,14 @@ use carrier_types::error::{CarrierError, CarrierResult};
 use serde_json::Value;
 use std::path::PathBuf;
 
+/// kv 域三元组：owner/user 缺席回落 ""——与被搬的 runtime kv.rs
+/// `unwrap_or("")` 逐字一致（tree 面的回落不同，见 tree.rs）。
 fn identity(ctx: &AgmemCtx) -> (&str, &str, &str) {
-    (&ctx.agent_id, &ctx.owner_id, &ctx.user_id)
+    (
+        ctx.agent_id.as_str(),
+        ctx.owner_id.as_deref().unwrap_or(""),
+        ctx.user_id.as_deref().unwrap_or(""),
+    )
 }
 
 pub fn kv_get(input: &Value, ctx: &AgmemCtx, db_flag: Option<&PathBuf>) -> CarrierResult<String> {
@@ -132,9 +138,10 @@ mod tests {
         let db = Some(db);
         let mo = AgmemCtx {
             agent_id: "mo".into(),
-            owner_id: "o1".into(),
-            user_id: "u@im".into(),
+            owner_id: Some("o1".into()),
+            user_id: Some("u@im".into()),
             home_dir: None,
+            db_path: None,
             workspace_root: None,
         };
         let other = AgmemCtx {

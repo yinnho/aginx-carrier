@@ -6,6 +6,7 @@
 pub mod a2a;
 pub mod agb_bridge;
 pub mod agf_bridge;
+pub mod agmem_bridge;
 pub mod carrier_bridge;
 pub mod agent;
 pub mod automation;
@@ -14,9 +15,7 @@ pub mod data_analyze;
 pub mod document;
 pub mod gateway_hub;
 pub mod knowledge;
-pub mod kv;
 pub mod media;
-pub mod memory;
 pub mod shell;
 pub mod sqlite;
 pub mod training;
@@ -36,6 +35,11 @@ use std::sync::Arc;
 //
 // 文件面工具（file_* + image_analyze）已随实现整体搬进 `agf` CLI
 // （M32 D3 批2）。工具面见 agf_bridge.rs；路径解析/沙箱留在桥内。
+//
+// 记忆面工具（kv_* / memory_tree / knowledge_* / flow_* /
+// clone_evaluate）已随实现整体搬进 `agmem` CLI（M35）。工具面见
+// agmem_bridge.rs；tools/kv.rs 与 tools/memory.rs 已删，knowledge.rs
+// 只剩 apply_patch + session_summarize 两个内核耦合留守面。
 // ---------------------------------------------------------------------------
 
 /// A category of related tools.
@@ -79,15 +83,14 @@ pub fn builtin_modules(
 ) -> Vec<Box<dyn ToolModule>> {
     let mut modules: Vec<Box<dyn ToolModule>> = vec![
         Box::new(agf_bridge::AgfBridge),
+        Box::new(agmem_bridge::AgmemBridge),
         Box::new(carrier_bridge::CarrierBridge),
         Box::new(document::DocumentTools),
         Box::new(sqlite::SqliteTools),
         Box::new(shell::ShellTools),
         Box::new(agb_bridge::AgbBridge),
         Box::new(knowledge::KnowledgeTools),
-        Box::new(kv::KvTools),
         Box::new(media::MediaTools),
-        Box::new(memory::MemoryTools),
         Box::new(agent::DelegationTools),
         Box::new(training::TrainingTools),
         Box::new(collaboration::CollaborationTools),

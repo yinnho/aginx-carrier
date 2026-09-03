@@ -87,7 +87,21 @@ async fn tool_train_evaluate(
     _caller_agent_id: Option<&str>,
 ) -> CarrierResult<String> {
     let target_root = crate::tools::resolve_target_workspace(input, kernel)?;
-    crate::tools::knowledge::tool_clone_evaluate(Some(&target_root)).await
+    // clone_evaluate 的实现已搬进 agmem CLI（M35）；train 面解析的是
+    // 目标分身的 workspace（kernel 侧），所以这里直调 lifecycle 的
+    // 确定性打分——输出格式与 agmem clone_evaluate 逐字一致。
+    let metrics = carrier_lifecycle::evaluate::compute_deterministic_metrics(&target_root);
+    Ok(format!(
+        "Quality Score: {}/100 ({})\nKnowledge: {} files, {} bytes\nSkills: {}\nIdentity: SOUL={}, SP={}, MEMORY={}",
+        metrics.score,
+        metrics.grade,
+        metrics.knowledge_files,
+        metrics.knowledge_total_bytes,
+        metrics.flow_count,
+        metrics.has_soul,
+        metrics.has_system_prompt,
+        metrics.has_memory,
+    ))
 }
 
 // ---------------------------------------------------------------------------

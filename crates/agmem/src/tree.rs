@@ -11,8 +11,11 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 pub fn memory_tree(input: &Value, ctx: &AgmemCtx, db_flag: Option<&PathBuf>) -> CarrierResult<String> {
-    let owner_id = ctx.owner_id.as_str();
-    let user_id = Some(ctx.user_id.as_str());
+    // owner 缺席回落 "default"、user 缺席 = 不按 user 过滤——与被搬的
+    // runtime memory.rs `unwrap_or("default")` / `Option<&str>` 逐字一致
+    // （kv 面的回落不同，见 kv.rs）。
+    let owner_id = ctx.owner_id.as_deref().unwrap_or("default");
+    let user_id = ctx.user_id.as_deref();
 
     let mode = match input.get("mode").and_then(|v| v.as_str()) {
         Some(m) => m,
