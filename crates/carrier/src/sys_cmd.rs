@@ -59,8 +59,9 @@ pub(crate) async fn location_get() -> CarrierResult<String> {
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| CarrierError::Network(format!("Failed to create HTTP client: {e}")))?;
+    // ip-api.com 免费档只开明文 HTTP（HTTPS 全局 403——上机实测 2026-09-02）。
     let resp = client
-        .get("https://ip-api.com/json/?fields=status,message,country,regionName,city,zip,lat,lon,timezone,isp,query")
+        .get("http://ip-api.com/json/?fields=status,message,country,regionName,city,zip,lat,lon,timezone,isp,query")
         .header("User-Agent", format!("OpenCarrier/{}", env!("CARGO_PKG_VERSION")))
         .send()
         .await
