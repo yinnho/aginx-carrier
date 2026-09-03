@@ -1,8 +1,9 @@
 //! api_tool_register — built-in tool for runtime API tool registration.
 //!
-//! Agent calls this with a TOML definition. The tool is parsed, validated,
-//! written to the workspace's api_tools.toml, and registered in the global
-//! registry so it's immediately available to all agents on the next turn.
+//! M34b 起落盘单真源在 `aginx-carrier api register`（同名块替换幂等）；
+//! 本模块只留定义 + 进程内 DYNAMIC_TOOLS 注册表更新（写盘成功后立即对
+//! 所有化身可用，不必等守护重启）。TOML 解析留在本进程仅为了取回工具
+//! 定义进注册表——校验权威在 CLI 侧。
 
 use crate::tool_context::ToolContext;
 use crate::tools::ToolModule;
@@ -14,7 +15,8 @@ use carrier_types::error::{CarrierError, CarrierResult};
 use carrier_types::tool::{PermissionLevel, ToolDefinition};
 
 /// Global registry of dynamically registered API tools.
-/// Written by api_tool_register, read by DeclarativeApiModule + messaging.rs.
+/// Updated after `aginx-carrier api register` succeeds on disk; read by
+/// DeclarativeApiModule + messaging.rs.
 static DYNAMIC_TOOLS: once_cell::sync::Lazy<RwLock<Vec<ApiToolDef>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
 
@@ -75,7 +77,7 @@ impl ToolModule for ApiToolRegisterModule {
 
         let global = input["global"].as_bool().unwrap_or(false);
 
-        // Parse and validate the TOML definition
+        // 解析仅为取回工具定义进注册表；校验/写盘权威在 CLI。
         let config: ApiToolsConfig = match toml::from_str(definition) {
             Ok(c) => c,
             Err(e) => {
@@ -84,56 +86,27 @@ impl ToolModule for ApiToolRegisterModule {
                 ))))
             }
         };
-
         if config.tool.is_empty() {
             return Some(Err(CarrierError::InvalidInput(
                 "No [[tool]] block found in definition".to_string(),
             )));
         }
-
-        let tool_def = &config.tool[0];
-
-        // Basic validation
-        if tool_def.name.is_empty() {
-            return Some(Err(CarrierError::InvalidInput(
-                "Tool name is required".to_string(),
-            )));
-        }
-        if tool_def.url.is_empty() {
-            return Some(Err(CarrierError::InvalidInput(
-                "Tool url is required".to_string(),
-            )));
-        }
-        if !tool_def.url.starts_with("https://") && !tool_def.url.starts_with("http://") {
-            return Some(Err(CarrierError::InvalidInput(
-                "Tool url must start with http:// or https://".to_string(),
-            )));
-        }
-
+        let tool_def = config.tool[0].clone();
         let tool_name = tool_def.name.clone();
 
-        // Write to api_tools.toml (workspace or global)
-        let write_result = if global {
-            write_to_global_toml(&config.tool[0])
-        } else {
-            write_to_workspace_toml(&config.tool[0], ctx.workspace_root)
-        };
-
-        if let Err(e) = write_result {
-            return Some(Err(CarrierError::Internal(format!(
-                "Failed to write api_tools.toml: {e}"
-            ))));
+        // 落盘走 CLI（单真源写手）：stdin TOML + --global/--workspace。
+        if let Err(e) = register_via_cli(definition, global, ctx.workspace_root).await {
+            return Some(Err(e));
         }
 
-        // Register in the dynamic registry so it's available immediately
+        // 写盘成功 → 进程内注册表立即可用（retain 同名替换，CLI 落盘同款）。
         {
             let mut tools = match DYNAMIC_TOOLS.write() {
                 Ok(t) => t,
                 Err(e) => return Some(Err(CarrierError::Internal(format!("Registry lock: {e}")))),
             };
-            // Remove existing tool with same name
             tools.retain(|t| t.name != tool_name);
-            tools.push(config.tool[0].clone());
+            tools.push(tool_def);
         }
 
         Some(Ok(format!(
@@ -151,203 +124,70 @@ impl ToolModule for ApiToolRegisterModule {
     }
 }
 
-/// Append a tool definition to the workspace's api_tools.toml.
-fn write_to_workspace_toml(
-    tool: &ApiToolDef,
+/// Spawn `aginx-carrier api register`（stdin=TOML 定义，stdout=D1 信封）。
+/// 同信任域不 env_clear；kill_on_drop 取消不留孤儿。
+async fn register_via_cli(
+    definition: &str,
+    global: bool,
     workspace_root: Option<&std::path::Path>,
 ) -> CarrierResult<()> {
-    let ws = workspace_root.ok_or(CarrierError::Internal(
-        "No workspace root available".to_string(),
-    ))?;
-    let toml_path = ws.join("api_tools.toml");
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
 
-    let serialized = serialize_tool(tool);
-
-    // Read existing content and append, or create new file
-    let content = std::fs::read_to_string(&toml_path).unwrap_or_default();
-    let new_content = if content.trim().is_empty() {
-        serialized
-    } else {
-        format!("{}\n\n{}", content.trim_end(), serialized)
-    };
-
-    std::fs::write(&toml_path, new_content).map_err(CarrierError::Io)?;
-    tracing::info!(path = %toml_path.display(), tool = %tool.name, "Registered API tool to workspace api_tools.toml");
-    Ok(())
-}
-
-/// Append a tool definition to the global api_tools.toml (~/.aginx/carrier/).
-fn write_to_global_toml(tool: &ApiToolDef) -> CarrierResult<()> {
-    let home = carrier_types::config::home_dir();
-    let toml_path = home.join("api_tools.toml");
-
-    let serialized = serialize_tool(tool);
-
-    let content = std::fs::read_to_string(&toml_path).unwrap_or_default();
-    let new_content = if content.trim().is_empty() {
-        serialized
-    } else {
-        format!("{}\n\n{}", content.trim_end(), serialized)
-    };
-
-    std::fs::write(&toml_path, new_content).map_err(CarrierError::Io)?;
-    tracing::info!(path = %toml_path.display(), tool = %tool.name, "Registered API tool to global api_tools.toml");
-    Ok(())
-}
-
-/// Serialize an ApiToolDef back to a TOML [[tool]] block.
-fn serialize_tool(tool: &ApiToolDef) -> String {
-    let mut out = String::new();
-    out.push_str("[[tool]]\n");
-    out.push_str(&format!("name = \"{}\"\n", tool.name));
-    out.push_str(&format!(
-        "description = \"{}\"\n",
-        tool.description.replace('"', "\\\"")
-    ));
-    out.push_str(&format!("url = \"{}\"\n", tool.url));
-    out.push_str(&format!("method = \"{}\"\n", tool.method));
-
-    if let Some(ref auth_env) = tool.auth_env {
-        out.push_str(&format!("auth_env = \"{}\"\n", auth_env));
-    }
-    if let Some(ref auth_param) = tool.auth_param {
-        out.push_str(&format!("auth_param = \"{}\"\n", auth_param));
-    }
-
-    // Params
-    if !tool.params.is_empty() {
-        out.push_str("\n[tool.params]\n");
-        for (name, param) in &tool.params {
-            let mut parts = Vec::new();
-            if param.required {
-                parts.push("required = true".to_string());
-            }
-            parts.push(format!("type = \"{}\"", param.r#type));
-            if !param.description.is_empty() {
-                parts.push(format!(
-                    "description = \"{}\"",
-                    param.description.replace('"', "\\\"")
-                ));
-            }
-            if let Some(ref default) = param.default {
-                match default {
-                    Value::String(s) => parts.push(format!("default = \"{}\"", s)),
-                    Value::Number(n) => parts.push(format!("default = {}", n)),
-                    Value::Bool(b) => parts.push(format!("default = {}", b)),
-                    _ => {}
-                }
-            }
-            out.push_str(&format!("{} = {{ {} }}\n", name, parts.join(", ")));
-        }
-    }
-
-    // Extract
-    if !tool.extract.is_empty() {
-        out.push_str("\n[tool.extract]\n");
-        for (name, def) in &tool.extract {
-            let mut parts = Vec::new();
-            if let Some(ref path) = def.path {
-                parts.push(format!("path = \"{}\"", path));
-            }
-            if let Some(ref transform) = def.transform {
-                parts.push(format!("transform = \"{}\"", transform));
-            }
-            if let Some(ref t) = def.r#type {
-                parts.push(format!("type = \"{}\"", t));
-            }
-            if def.derived.unwrap_or(false) {
-                parts.push("derived = true".to_string());
-            }
-            if let Some(ref from) = def.from {
-                parts.push(format!("from = \"{}\"", from));
-            }
-            if let Some(ref tiers) = def.tiers {
-                let tier_strs: Vec<String> = tiers
-                    .iter()
-                    .map(|t| match t.le {
-                        Some(le) => format!("{{ le = {}, value = \"{}\" }}", le, t.value),
-                        None => format!("{{ value = \"{}\" }}", t.value),
-                    })
-                    .collect();
-                parts.push(format!("tiers = [\n  {},\n]", tier_strs.join(",\n  ")));
-            }
-            out.push_str(&format!("{} = {{ {} }}\n", name, parts.join(", ")));
-        }
-    }
-
-    // Error check
-    if let Some(ref check) = tool.error_check {
-        out.push_str("\n[tool.error_check]\n");
-        out.push_str(&format!("field = \"{}\"\n", check.field));
-        out.push_str(&format!("expect = \"{}\"\n", check.expect));
-    }
-
-    // Static headers
-    if !tool.headers.is_empty() {
-        out.push_str("\n[tool.headers]\n");
-        for (k, v) in &tool.headers {
-            out.push_str(&format!("{} = \"{}\"\n", k, escape_toml_string(v)));
-        }
-    }
-
-    // JSON body
-    if let Some(ref body) = tool.body {
-        out.push_str("\n[tool.body]\n");
-        let fields: Vec<String> = body
-            .fields
-            .iter()
-            .map(|f| format!("\"{}\"", escape_toml_string(f)))
-            .collect();
-        out.push_str(&format!("fields = [{}]\n", fields.join(", ")));
-    }
-
-    // HMAC signing
-    if let Some(ref hmac) = tool.hmac {
-        out.push_str("\n[tool.hmac]\n");
-        out.push_str(&format!("key_id_env = \"{}\"\n", hmac.key_id_env));
-        out.push_str(&format!("secret_env = \"{}\"\n", hmac.secret_env));
-        out.push_str(&format!(
-            "sign_template = \"{}\"\n",
-            escape_toml_string(&hmac.sign_template)
+    if !global && workspace_root.is_none() {
+        return Err(CarrierError::Internal(
+            "No workspace root available".to_string(),
         ));
-        out.push_str(&format!("algorithm = \"{}\"\n", hmac.algorithm));
-        if !hmac.headers.is_empty() {
-            out.push_str("\n[tool.hmac.headers]\n");
-            for (k, v) in &hmac.headers {
-                out.push_str(&format!(
-                    "\"{}\" = \"{}\"\n",
-                    escape_toml_string(k),
-                    escape_toml_string(v)
-                ));
-            }
-        }
     }
 
-    // Context-field injection
-    if !tool.inject.is_empty() {
-        for (field, rule) in &tool.inject {
-            out.push_str(&format!("\n[tool.inject.{}]\n", field));
-            out.push_str(&format!("from = \"{}\"\n", rule.from));
-            if let Some(ref ch) = rule.channel {
-                out.push_str(&format!("channel = \"{}\"\n", ch));
-            }
-            if !rule.only_if_absent.is_empty() {
-                let fs: Vec<String> = rule
-                    .only_if_absent
-                    .iter()
-                    .map(|f| format!("\"{}\"", f))
-                    .collect();
-                out.push_str(&format!("only_if_absent = [{}]\n", fs.join(", ")));
-            }
-        }
+    let mut cmd = tokio::process::Command::new("aginx-carrier");
+    cmd.arg("api").arg("register").arg("--json");
+    if global {
+        cmd.arg("--global");
+    } else {
+        cmd.arg("--workspace").arg(workspace_root.unwrap());
+    }
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = cmd.spawn().map_err(|e| {
+        CarrierError::Internal(format!(
+            "aginx-carrier CLI not available ({e}) — api_tool_register writes through \
+             `aginx-carrier api register`. Check PATH (/var/bin)."
+        ))
+    })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(definition.as_bytes()).await;
+        let _ = stdin.shutdown().await;
     }
 
-    out
-}
-fn escape_toml_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| CarrierError::Internal(format!("aginx-carrier api register subprocess failed: {e}")))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    let envelope: Value = serde_json::from_str(&stdout).map_err(|_| {
+        let tail = if stdout.is_empty() { stderr } else { stdout };
+        let preview = crate::str_utils::safe_truncate_str(&tail, 300);
+        CarrierError::Internal(format!(
+            "aginx-carrier api register returned a non-JSON response (exit {:?}): {preview}",
+            output.status.code()
+        ))
+    })?;
+
+    if envelope["ok"].as_bool().unwrap_or(false) {
+        Ok(())
+    } else {
+        let msg = envelope["error"]
+            .as_str()
+            .or_else(|| envelope["error"]["message"].as_str())
+            .unwrap_or("unknown aginx-carrier api register error");
+        Err(CarrierError::Internal(msg.to_string()))
+    }
 }
