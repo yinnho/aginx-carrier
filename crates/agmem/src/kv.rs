@@ -135,6 +135,7 @@ mod tests {
             owner_id: "o1".into(),
             user_id: "u@im".into(),
             home_dir: None,
+            workspace_root: None,
         };
         let other = AgmemCtx {
             agent_id: "clone".into(),

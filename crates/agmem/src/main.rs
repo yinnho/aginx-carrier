@@ -1,24 +1,30 @@
 //! agmem — 记忆工具 CLI（M35）。
 //!
 //! 两张脸：人面子命令（kv get/set/list/del、tree search/topic/source/
-//! global/drill/leaves），机读面 `agmem tool <name>`（stdin 收工具入参
-//! JSON，stdout 出 D1 信封；runtime 的 agmem_bridge 消费）。身份三元组
-//! 经 stdin JSON 保留键 `_ctx` 注入——见 lib.rs 头注。
+//! global/drill/leaves、k 知识库面、flow 流程面、evaluate），机读面
+//! `agmem tool <name>`（stdin 收工具入参 JSON，stdout 出 D1 信封；runtime
+//! 的 agmem_bridge 消费）。身份三元组经 stdin JSON 保留键 `_ctx` 注入——
+//! 见 lib.rs 头注。knowledge/flow 面要 workspace：桥注入
+//! `_ctx.workspace_root`，人面给 --workspace。
 
 use clap::{Parser, Subcommand};
 use serde_json::Value;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "agmem",
     version,
-    about = "记忆工具 CLI — kv 存取 + 记忆树检索",
-    long_about = "agmem 是记忆面工具的 CLI 形态（M35 外置成包）。\nkv 按 (agent, owner, user) 三元组隔离；tree 是已摄取对话/邮件/文档的\n回溯索引。人面子命令直接给参数；机读面 `agmem tool <name>` 从 stdin\n读 JSON，stdout 出 D1 信封（{\"ok\":true,\"data\":…}）。"
+    about = "记忆工具 CLI — kv 存取 + 记忆树检索 + 知识库/流程",
+    long_about = "agmem 是记忆面工具的 CLI 形态（M35 外置成包）。\nkv 按 (agent, owner, user) 三元组隔离；tree 是已摄取对话/邮件/文档的\n回溯索引；k 面管化身 workspace 的知识库；flow 面管流程（skills）。\n人面子命令直接给参数；机读面 `agmem tool <name>` 从 stdin 读 JSON，\nstdout 出 D1 信封（{\"ok\":true,\"data\":…}）。"
 )]
 struct Cli {
     /// substrate 库路径（缺省 $HOME/.aginx/carrier/data/carrier.db）
     #[arg(long, global = true)]
     db: Option<String>,
+    /// knowledge/flow 面的 workspace 根（机读面经 _ctx.workspace_root 注入）
+    #[arg(long, global = true)]
+    workspace: Option<String>,
     /// 身份三元组：agent（默认 me）
     #[arg(long, global = true, default_value = "me")]
     agent: String,
@@ -115,9 +121,99 @@ enum Command {
         /// chunk ID 列表
         chunk_ids: Vec<String>,
     },
+    /// 知识库面：化身 workspace 下的 knowledge/*.md（要 --workspace）
+    K {
+        #[command(subcommand)]
+        action: KCmd,
+    },
+    /// 流程面：化身 workspace 下的 flows/*.md（要 --workspace）
+    Flow {
+        #[command(subcommand)]
+        action: FlowCmd,
+    },
+    /// 分身质量体检（knowledge/skills/identity 面的确定性打分）
+    Evaluate,
     /// 机读面：工具名 + stdin JSON 入参 → stdout D1 信封（runtime 桥用）
     Tool {
-        /// 工具名（kv_get / kv_set / kv_list / kv_delete / memory_tree）
+        /// 工具名（lib.rs TOOL_NAMES 为准：kv_* / memory_tree /
+        /// knowledge_* / clone_evaluate / flow_*）
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum KCmd {
+    /// 列出知识文件（带 frontmatter 标题）
+    Ls,
+    /// 读一个知识文件（未知文件名时列出可用清单）
+    Read {
+        /// 文件名（支持模糊匹配：精确 → 前缀 → 子串）
+        filename: String,
+    },
+    /// 新增知识条目（正文从 stdin 读）
+    Add {
+        /// 标题（同时是文件名）
+        title: String,
+    },
+    /// 整体替换一个知识文件（完整新内容从 stdin 读，须带 frontmatter）
+    Update {
+        /// 目标文件（模糊匹配）
+        filename: String,
+    },
+    /// 删除知识文件（版本留痕）
+    Rm {
+        /// 目标文件（模糊匹配）
+        filename: String,
+    },
+    /// 批量导入（数据从 stdin 读）
+    Import {
+        /// 数据类型（auto/json/markdown/text…）
+        #[arg(long, default_value = "auto")]
+        r#type: String,
+    },
+    /// 体检：frontmatter/索引问题清单
+    Lint,
+    /// 自修：lint 出的可自动修复项
+    Heal,
+    /// 重建 MEMORY.md 索引
+    Index,
+    /// 从原始内容提炼一条知识（正文从 stdin 读）
+    Extract {
+        /// 标题
+        title: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FlowCmd {
+    /// 新建流程（正文从 stdin 读）
+    New {
+        /// 流程名
+        name: String,
+        /// 描述（进 frontmatter）
+        #[arg(long)]
+        desc: Option<String>,
+        /// 工具白名单（可多次）
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+    },
+    /// 更新流程（--desc/--tool 改元数据；--stdin 换正文）
+    Set {
+        /// 流程名
+        name: String,
+        /// 新描述
+        #[arg(long)]
+        desc: Option<String>,
+        /// 工具白名单（可多次；整体替换）
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        /// 正文从 stdin 读（整体替换）
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// 读流程全文
+    Cat {
+        /// 流程名（支持模糊匹配）
         name: String,
     },
 }
@@ -142,11 +238,13 @@ fn fallback_of(cli: &Cli) -> agmem::AgmemCtx {
         owner_id: cli.owner.clone(),
         user_id: cli.user.clone(),
         home_dir: None,
+        workspace_root: None,
     }
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let db_flag = cli.db.as_ref().map(std::path::PathBuf::from);
+    let db_flag = cli.db.as_ref().map(PathBuf::from);
+    let ws_flag = cli.workspace.as_ref().map(PathBuf::from);
     let fallback = fallback_of(&cli);
     match &cli.command {
         Command::Tool { name } => {
@@ -154,7 +252,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)?;
             let input: Value = serde_json::from_str(&raw)
                 .map_err(|e| anyhow::anyhow!("stdin 不是合法 JSON 入参: {e}"))?;
-            match agmem::execute_tool(name, &input, db_flag.as_ref(), fallback).await {
+            match agmem::execute_tool(name, &input, db_flag.as_ref(), ws_flag.as_ref(), fallback)
+                .await
+            {
                 None => {
                     print_envelope_error(&format!("unknown tool: {name}"));
                     std::process::exit(1);
@@ -175,7 +275,9 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             // 人面：参数拼回工具 JSON 入参，走同一条 execute_tool 单真源。
             let (name, input) = args_to_input(human)?;
             let input_val = Value::Object(input);
-            match agmem::execute_tool(name, &input_val, db_flag.as_ref(), fallback).await {
+            match agmem::execute_tool(name, &input_val, db_flag.as_ref(), ws_flag.as_ref(), fallback)
+                .await
+            {
                 None => anyhow::bail!("unknown tool: {name}"),
                 Some(Ok(data)) => println!("{data}"),
                 Some(Err(e)) => agmem::bail_human(&e),
@@ -294,9 +396,96 @@ fn args_to_input(cmd: &Command) -> anyhow::Result<(&'static str, serde_json::Map
             m.insert("chunk_ids".into(), json!(chunk_ids));
             Ok(("memory_tree", m))
         }
+        Command::K { action } => match action {
+            KCmd::Ls => Ok(("knowledge_list", m)),
+            KCmd::Read { filename } => {
+                m.insert("filename".into(), json!(filename));
+                Ok(("knowledge_read", m))
+            }
+            KCmd::Add { title } => {
+                let content = read_stdin()?;
+                m.insert("title".into(), json!(title));
+                m.insert("content".into(), json!(content));
+                Ok(("knowledge_add", m))
+            }
+            KCmd::Update { filename } => {
+                let content = read_stdin()?;
+                m.insert("filename".into(), json!(filename));
+                m.insert("content".into(), json!(content));
+                Ok(("knowledge_update", m))
+            }
+            KCmd::Rm { filename } => {
+                m.insert("filename".into(), json!(filename));
+                Ok(("knowledge_remove", m))
+            }
+            KCmd::Import { r#type } => {
+                let data = read_stdin()?;
+                m.insert("data".into(), json!(data));
+                m.insert("data_type".into(), json!(r#type));
+                Ok(("knowledge_import", m))
+            }
+            KCmd::Lint => Ok(("knowledge_lint", m)),
+            KCmd::Heal => Ok(("knowledge_heal", m)),
+            KCmd::Index => Ok(("knowledge_index", m)),
+            KCmd::Extract { title } => {
+                let content = read_stdin()?;
+                m.insert("title".into(), json!(title));
+                m.insert("content".into(), json!(content));
+                Ok(("knowledge_extract", m))
+            }
+        },
+        Command::Flow { action } => match action {
+            FlowCmd::New {
+                name,
+                desc,
+                tools,
+            } => {
+                let body = read_stdin()?;
+                m.insert("name".into(), json!(name));
+                if let Some(d) = desc {
+                    m.insert("description".into(), json!(d));
+                }
+                if !tools.is_empty() {
+                    m.insert("tools".into(), json!(tools));
+                }
+                m.insert("body".into(), json!(body));
+                Ok(("flow_create", m))
+            }
+            FlowCmd::Set {
+                name,
+                desc,
+                tools,
+                stdin,
+            } => {
+                m.insert("name".into(), json!(name));
+                if let Some(d) = desc {
+                    m.insert("description".into(), json!(d));
+                }
+                if !tools.is_empty() {
+                    m.insert("tools".into(), json!(tools));
+                }
+                if *stdin {
+                    let body = read_stdin()?;
+                    m.insert("body".into(), json!(body));
+                }
+                Ok(("flow_update", m))
+            }
+            FlowCmd::Cat { name } => {
+                m.insert("name".into(), json!(name));
+                Ok(("flow_load", m))
+            }
+        },
+        Command::Evaluate => Ok(("clone_evaluate", m)),
         // 已在 run() 里分走；穷尽匹配留这层保险
         Command::Tool { .. } => unreachable!("Tool 在 run() 先行分派"),
     }
+}
+
+/// 正文类参数统一从 stdin 读（sh-first：`… | agmem k add 标题`）。
+fn read_stdin() -> anyhow::Result<String> {
+    let mut buf = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+    Ok(buf)
 }
 
 fn print_envelope_error(msg: &str) {

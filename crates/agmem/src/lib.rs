@@ -1,21 +1,28 @@
 //! agmem — 记忆工具 CLI 的库面（M35）。
 //!
-//! kv_get / kv_set / kv_list / kv_delete / memory_tree 五个工具的语义从
-//! carrier-runtime 的 tools/kv.rs 与 tools/memory.rs 整体搬来（行为同构：
-//! 同样的身份三元组隔离、同样的输出文案、同样的截断边界处理）。runtime
-//! 侧只留 `agmem_bridge`：同名 ToolDefinition + spawn `agmem tool <name>`。
+//! kv_get / kv_set / kv_list / kv_delete / memory_tree 的语义从
+//! carrier-runtime 的 tools/kv.rs 与 tools/memory.rs 整体搬来，knowledge
+//! 库 + flows 面（list/read/add/update/remove/import/lint/heal/extract/
+//! index、clone_evaluate、flow_create/update/load）从 tools/knowledge.rs
+//! 搬来（行为同构：同样的身份三元组隔离、同样的输出文案、同样的截断
+//! 边界处理、同样的凭证闸与 frontmatter 闸）。runtime 侧只留
+//! `agmem_bridge`：同名 ToolDefinition + spawn `agmem tool <name>`；
+//! apply_patch 与 session_summarize 留守 runtime（内核耦合面，不属记忆域）。
 //!
 //! 两张脸：
 //! - 人/流程脚本：`agmem kv get <key>`、`agmem kv set <k> <v>`、
-//!   `agmem kv list [prefix]`、`agmem kv del <k>`、`agmem tree search <q>`…
+//!   `agmem tree search <q>`…（见 main.rs）
 //! - 机读（runtime 桥用）：`agmem tool <name>`，stdin 收工具入参 JSON，
 //!   stdout 出 D1 信封（`{"ok":true,"data":"…"}` / `{"ok":false,"error":…}`）。
 //!
 //! 与 agf 的路径分工不同，本 CLI 直开 memory substrate（rusqlite WAL +
 //! busy_timeout=5000，substrate.rs open 内建），默认
 //! `$HOME/.aginx/carrier/data/carrier.db` —— 与守护同一库、同一迁移链，
-//! 并发安全（M35a spike 2026-09-03）。身份经 stdin JSON 保留键 `_ctx`
-//! 注入：
+//! 并发安全（M35a spike 2026-09-03）。knowledge/flows 面不吃库，吃
+//! workspace 文件树（knowledge/、flows/、MEMORY.md），路径经 `_ctx.workspace_root`
+//! 注入（对齐 runtime ToolContext.workspace_root = 化身 manifest 的
+//! workspace 路径）；人面用 --workspace 直给。身份经 stdin JSON 保留键
+//! `_ctx` 注入：
 //!
 //! ```json
 //! {
@@ -31,6 +38,7 @@
 //! kv 域按 (agent, owner, user) 隔离——人面默认身份看不到化身私域是
 //! 正确行为，不是 bug。
 
+pub mod knowledge;
 pub mod kv;
 pub mod tree;
 
@@ -40,16 +48,31 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 /// 本 CLI 承载的全部工具名（与 runtime 桥的 definitions 一一对应；
-/// kv_delete 是 CLI 补位——substrate 一直有 delete，上游工具面漏了）。
+/// kv_delete 是 CLI 补位——substrate 一直有 delete，上游工具面漏了。
+/// apply_patch / session_summarize 不在表内：留守 runtime，内核耦合面）。
 pub const TOOL_NAMES: &[&str] = &[
     "kv_get",
     "kv_set",
     "kv_list",
     "kv_delete",
     "memory_tree",
+    "knowledge_list",
+    "knowledge_read",
+    "knowledge_add",
+    "knowledge_update",
+    "knowledge_remove",
+    "knowledge_import",
+    "knowledge_lint",
+    "knowledge_heal",
+    "knowledge_extract",
+    "knowledge_index",
+    "clone_evaluate",
+    "flow_create",
+    "flow_update",
+    "flow_load",
 ];
 
-/// kv/tree 域的身份三元组 + substrate 定位。
+/// kv/tree 域的身份三元组 + substrate 定位 + knowledge 域的 workspace。
 #[derive(Debug, Clone)]
 pub struct AgmemCtx {
     pub agent_id: String,
@@ -57,6 +80,9 @@ pub struct AgmemCtx {
     pub user_id: String,
     /// substrate 所在 HOME（默认 $HOME；人面可用 --db 直给库路径）。
     pub home_dir: Option<PathBuf>,
+    /// knowledge/flows 面的 workspace 根（对齐 runtime
+    /// ToolContext.workspace_root = 化身 manifest 的 workspace 路径）。
+    pub workspace_root: Option<PathBuf>,
 }
 
 /// 人面默认身份。owner="default" 对齐 runtime memory.rs 的
@@ -68,6 +94,7 @@ pub fn default_identity() -> AgmemCtx {
         owner_id: "default".to_string(),
         user_id: "local".to_string(),
         home_dir: None,
+        workspace_root: None,
     }
 }
 
@@ -96,6 +123,10 @@ pub fn ctx_of(input: &Value, fallback: AgmemCtx) -> AgmemCtx {
             .get("home_dir")
             .and_then(|v| v.as_str())
             .map(PathBuf::from),
+        workspace_root: c
+            .get("workspace_root")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from),
     }
 }
 
@@ -112,6 +143,12 @@ pub fn db_path_of(ctx: &AgmemCtx, db_flag: Option<&PathBuf>) -> PathBuf {
     home.join(".aginx").join("carrier").join("data").join("carrier.db")
 }
 
+/// workspace 根：显式 --workspace > _ctx.workspace_root > 无（knowledge
+/// 面的工具此时按上游同款 Internal 报错——人面裸调需要 --workspace）。
+pub fn workspace_of(ctx: &AgmemCtx, ws_flag: Option<&PathBuf>) -> Option<PathBuf> {
+    ws_flag.cloned().or_else(|| ctx.workspace_root.clone())
+}
+
 /// 打开 substrate（WAL + busy_timeout 在 open 内建；迁移同步进行）。
 pub fn open_substrate(path: &std::path::Path) -> CarrierResult<MemorySubstrate> {
     MemorySubstrate::open(path)
@@ -123,9 +160,11 @@ pub async fn execute_tool(
     name: &str,
     input: &Value,
     db_flag: Option<&PathBuf>,
+    ws_flag: Option<&PathBuf>,
     fallback: AgmemCtx,
 ) -> Option<CarrierResult<String>> {
     let ctx = ctx_of(input, fallback);
+    let ws = workspace_of(&ctx, ws_flag);
     match name {
         // kv 面：短平快，直接在当前线程查（WAL 读不挡守护）。
         "kv_get" => Some(kv::kv_get(input, &ctx, db_flag)),
@@ -145,6 +184,22 @@ pub async fn execute_tool(
             .map_err(|e| CarrierError::Internal(e.to_string()))
             .and_then(|r| r),
         ),
+        // knowledge/flows 面：纯 workspace 文件树操作（不吃库），
+        // tokio::fs 与上游 runtime 同款执行形状。
+        "knowledge_list" => Some(knowledge::knowledge_list(ws.as_deref()).await),
+        "knowledge_read" => Some(knowledge::knowledge_read(input, ws.as_deref()).await),
+        "knowledge_add" => Some(knowledge::knowledge_add(input, ws.as_deref()).await),
+        "knowledge_update" => Some(knowledge::knowledge_update(input, ws.as_deref()).await),
+        "knowledge_remove" => Some(knowledge::knowledge_remove(input, ws.as_deref()).await),
+        "knowledge_import" => Some(knowledge::knowledge_import(input, ws.as_deref()).await),
+        "knowledge_lint" => Some(knowledge::knowledge_lint(ws.as_deref()).await),
+        "knowledge_heal" => Some(knowledge::knowledge_heal(ws.as_deref()).await),
+        "knowledge_extract" => Some(knowledge::knowledge_extract(input, ws.as_deref()).await),
+        "knowledge_index" => Some(knowledge::knowledge_index(ws.as_deref()).await),
+        "clone_evaluate" => Some(knowledge::clone_evaluate(ws.as_deref()).await),
+        "flow_create" => Some(knowledge::flow_create(input, ws.as_deref()).await),
+        "flow_update" => Some(knowledge::flow_update(input, ws.as_deref()).await),
+        "flow_load" => Some(knowledge::flow_load(input, ws.as_deref()).await),
         _ => None,
     }
 }
@@ -166,7 +221,7 @@ mod tests {
             "key": "k",
             "_ctx": {
                 "agent_id": "mo", "owner_id": "o1", "user_id": "u@im",
-                "home_dir": "/tmp/h"
+                "home_dir": "/tmp/h", "workspace_root": "/var/lib/ws/mo"
             }
         });
         let c = ctx_of(&input, default_identity());
@@ -174,11 +229,33 @@ mod tests {
         assert_eq!(c.owner_id, "o1");
         assert_eq!(c.user_id, "u@im");
         assert_eq!(c.home_dir, Some(PathBuf::from("/tmp/h")));
+        // workspace 随 _ctx 进来（桥注入化身 manifest 的 workspace 路径）
+        assert_eq!(
+            c.workspace_root,
+            Some(PathBuf::from("/var/lib/ws/mo"))
+        );
         // db 路径随之指向该 HOME 的 carrier.db
         assert_eq!(
             db_path_of(&c, None),
             PathBuf::from("/tmp/h/.aginx/carrier/data/carrier.db")
         );
+    }
+
+    #[test]
+    fn workspace_flag_wins_over_ctx() {
+        let c = AgmemCtx {
+            workspace_root: Some(PathBuf::from("/tmp/ws-from-ctx")),
+            ..default_identity()
+        };
+        assert_eq!(
+            workspace_of(&c, Some(&PathBuf::from("/tmp/ws-flag"))),
+            Some(PathBuf::from("/tmp/ws-flag"))
+        );
+        assert_eq!(
+            workspace_of(&c, None),
+            Some(PathBuf::from("/tmp/ws-from-ctx"))
+        );
+        assert_eq!(workspace_of(&default_identity(), None), None);
     }
 
     #[test]
@@ -204,6 +281,13 @@ mod tests {
     #[test]
     fn tool_names_are_the_contract() {
         // runtime 桥按这个名字表对齐 definitions；改名 = 破金样本。
-        assert_eq!(TOOL_NAMES, &["kv_get", "kv_set", "kv_list", "kv_delete", "memory_tree"]);
+        // apply_patch / session_summarize 刻意缺席：留守 runtime。
+        assert_eq!(TOOL_NAMES.len(), 19);
+        assert!(TOOL_NAMES.contains(&"kv_get"));
+        assert!(TOOL_NAMES.contains(&"memory_tree"));
+        assert!(TOOL_NAMES.contains(&"knowledge_list"));
+        assert!(TOOL_NAMES.contains(&"flow_load"));
+        assert!(!TOOL_NAMES.contains(&"apply_patch"));
+        assert!(!TOOL_NAMES.contains(&"session_summarize"));
     }
 }
