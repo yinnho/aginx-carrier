@@ -63,6 +63,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "agmem"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "carrier-memory",
+ "carrier-types",
+ "chrono",
+ "clap",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -483,13 +499,19 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "hex",
+ "hmac",
  "qrcode",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 
