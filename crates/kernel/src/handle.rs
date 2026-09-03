@@ -1302,27 +1302,13 @@ impl MemoryHandle for MemorySubstrateHandle {
 
 /// Build the memory handle for injection into agent_loop/tools/compaction.
 ///
-/// Branches on the `AGINXMEMORY_URL` env switch (see `carrier_runtime::http_memory`):
-/// set -> `HttpMemoryHandle` (kv+tree delegated to the external aginxMemory
-/// service over HTTP); unset or empty -> `MemorySubstrateHandle` (in-process,
-/// the default and the migration-period fallback).
+/// Memory is LOCAL: in-process `MemorySubstrate` (sqlite, WAL) — the phone
+/// and the server twin run the same substrate, no PG service in between
+/// (M35, 2026-09-03: the `AGINXMEMORY_URL`/`HttpMemoryHandle` delegation
+/// path was removed; roaming lands as substrate-level sync, M37).
 pub fn make_memory_handle(
     memory: Arc<MemorySubstrate>,
 ) -> Arc<dyn carrier_runtime::memory_handle::MemoryHandle> {
-    if let Some(url) = carrier_runtime::http_memory::aginx_memory_url_opt() {
-        match carrier_runtime::http_memory::HttpMemoryHandle::new(url.clone(), memory.clone()) {
-            Ok(h) => {
-                tracing::info!(url = %url, "memory: routing kv+tree to aginxMemory");
-                return Arc::new(h);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "memory: HttpMemoryHandle build failed, falling back to in-process MemorySubstrate"
-                );
-            }
-        }
-    }
     Arc::new(MemorySubstrateHandle::new(memory))
 }
 

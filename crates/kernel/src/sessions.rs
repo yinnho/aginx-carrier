@@ -237,11 +237,8 @@ impl CarrierKernel {
         // in the empty-string partition and is NOT picked up by the per-user
         // drawer prefetch — that's fine, this is archival, not inference recall.
         let key = format!("session_{date}_{slug}");
-        // Route through the injected handle so AGINXMEMORY_URL is honoured
-        // (avoids split-brain: archival summary reaches the external service
-        // when memory is externalised). reset_session is sync but only ever
-        // called from async axum handlers, so HttpMemoryHandle's internal
-        // block_in_place bridge is safe.
+        // Through the shared memory handle — single write path, the same
+        // substrate the tools and the agent loop see (memory is local, M35).
         let mem_handle = crate::handle::make_memory_handle(std::sync::Arc::clone(&self.memory));
         if let Err(e) = mem_handle.kv_set(
             &agent_id.to_string(),
@@ -625,8 +622,8 @@ impl CarrierKernel {
         if !result.summary.is_empty() {
             let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
             let summary_key = format!("session_compaction.{date}");
-            // Route through the injected handle so AGINXMEMORY_URL is honoured
-            // (compaction writeback reaches the external aginxMemory service).
+            // Through the shared memory handle — single write path (memory
+            // is local, M35).
             let mem_handle = crate::handle::make_memory_handle(std::sync::Arc::clone(&self.memory));
             match mem_handle.kv_set(
                 &entry.name,

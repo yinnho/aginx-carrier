@@ -1061,11 +1061,8 @@ impl CarrierKernel {
         };
 
         let handle = crate::handle::make_memory_handle(std::sync::Arc::clone(&self.memory));
-        // Route through the injected handle so AGINXMEMORY_URL (external
-        // aginxMemory) is honoured here too, not just at the tool/agent-loop
-        // injection points. tree_query_* are async on the trait; bridge from
-        // this sync method via block_in_place (safe: callers run us from an
-        // async context on the multi-thread runtime).
+        // Through the shared memory handle — tree queries take the same
+        // path the tools do (memory is local, M35).
         let per_user = sender_id.filter(|s| !s.is_empty()).map(|sender| {
             let req = SourceQuery {
                 owner_id: tree_owner,
@@ -1159,7 +1156,8 @@ impl CarrierKernel {
         Vec<carrier_runtime::prompt_builder::DrawerEntry>,
         Vec<(String, String)>,
     ) {
-        // Route through the injected handle so AGINXMEMORY_URL is honoured.
+        // Through the shared memory handle — single write path (memory is
+        // local, M35).
         let handle = crate::handle::make_memory_handle(std::sync::Arc::clone(&self.memory));
         let all_pairs = match handle.kv_list(agent_name, owner_id, sender_id) {
             Ok(pairs) => pairs,
@@ -1237,7 +1235,8 @@ impl CarrierKernel {
         // owner_id.unwrap_or("") — NOT the sender fallback (that mismatch is
         // what used to hide sender-partitioned memories from the prompt).
         let kv_owner = owner_id.as_deref().unwrap_or("");
-        // Route through the injected handle so AGINXMEMORY_URL is honoured.
+        // Through the shared memory handle — single write path (memory is
+        // local, M35).
         let mem_handle = crate::handle::make_memory_handle(std::sync::Arc::clone(&self.memory));
         let user_name = mem_handle
             .kv_get(&manifest.name, kv_owner, sid, "user_name")

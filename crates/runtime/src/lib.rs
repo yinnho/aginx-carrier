@@ -21,7 +21,6 @@ pub mod drivers;
 pub mod file_view;
 pub mod hooks;
 pub mod host_functions;
-pub mod http_memory;
 pub mod intent_classifier;
 pub mod kernel_handle;
 pub mod link_understanding;
