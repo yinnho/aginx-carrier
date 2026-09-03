@@ -1184,6 +1184,19 @@ fn serialize_tool(tool: &ApiToolDef) -> String {
         }
     }
 
+    // [tool.cron]（原 register.rs 的 serialize_tool 漏了这节——注册 cron 工具
+    // 会静默丢调度，注册后永不发射；注册面成为唯一写手后这是硬伤）。
+    if let Some(ref cron) = tool.cron {
+        out.push_str("\n[tool.cron]\n");
+        out.push_str(&format!("schedule = \"{}\"\n", cron.schedule));
+        if let Some(ref save_to) = cron.save_to {
+            out.push_str(&format!("save_to = \"{}\"\n", save_to));
+        }
+        if let Some(ref table) = cron.table {
+            out.push_str(&format!("table = \"{}\"\n", table));
+        }
+    }
+
     out
 }
 
@@ -1644,5 +1657,31 @@ method = "GET"
         assert_eq!(back.method, cfg.method);
         assert_eq!(back.body.as_ref().unwrap().fields, cfg.body.as_ref().unwrap().fields);
         assert_eq!(back.params.len(), cfg.params.len());
+    }
+
+    /// [tool.cron] 必须过序列化往返——注册 cron 工具丢调度 = 永不发射
+    /// （原 register.rs 就栽在这）。
+    #[test]
+    fn serialize_tool_keeps_cron_section() {
+        let cfg = parse_tool(
+            r#"
+[[tool]]
+name = "ip_city_cron"
+description = "snapshots"
+url = "http://ip-api.com/json/"
+method = "GET"
+[tool.cron]
+schedule = "* * * * *"
+save_to = "sqlite:data/m34-cron.db"
+table = "m34_ip_city"
+"#,
+        );
+        let ser = serialize_tool(&cfg);
+        assert!(ser.contains("[tool.cron]"), "cron section must be serialized");
+        let back = parse_tool(&ser);
+        let cron = back.cron.expect("cron survives roundtrip");
+        assert_eq!(cron.schedule, "* * * * *");
+        assert_eq!(cron.save_to.as_deref(), Some("sqlite:data/m34-cron.db"));
+        assert_eq!(cron.table.as_deref(), Some("m34_ip_city"));
     }
 }
