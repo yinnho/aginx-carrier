@@ -1,13 +1,13 @@
-//! agb — AginxBrowser 客户端 CLI 的库面（M31 D3 批1）。
+//! aginx-web — AginxBrowser 客户端 CLI 的库面（原 agb，M31 D3 批1；D13 改姓 2026-09-09）。
 //!
 //! browser_* / web_search / web_fetch 三组无状态 HTTP 工具的实现从
 //! carrier-runtime 整体搬来（行为逐字节同构：同样的 HTTP 体、同样的
 //! 输出格式、同样的安全管线 SSRF/taint/风控路由）。runtime 侧只留
-//! `agb_bridge`：同名 ToolDefinition + spawn `agb tool <name>`。
+//! `web_bridge`：同名 ToolDefinition + spawn `aginx-web tool <name>`。
 //!
 //! 两张脸：
-//! - 人/流程脚本：`agb navigate <url>`、`agb search <q>`、`agb fetch <url>` …
-//! - 机读（runtime 桥用）：`agb tool <name>`，stdin 收工具入参 JSON，
+//! - 人/流程脚本：`aginx-web navigate <url>`、`aginx-web search <q>`、`aginx-web fetch <url>` …
+//! - 机读（runtime 桥用）：`aginx-web tool <name>`，stdin 收工具入参 JSON，
 //!   stdout 出 D1 信封（`{"ok":true,"data":"…"}` / `{"ok":false,"error":…}`）。
 
 pub mod browser;
@@ -19,7 +19,7 @@ pub mod web_content;
 use carrier_types::error::{CarrierError, CarrierResult};
 use serde_json::Value;
 
-pub const USER_AGENT: &str = concat!("agb/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("aginx-web/", env!("CARGO_PKG_VERSION"));
 
 /// Default AginBrowser endpoint. Override via `AGINXBROWSER_URL` env var.
 pub const AGINXBROWSER_DEFAULT_URL: &str = "http://127.0.0.1:8089";
@@ -59,7 +59,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "web_fetch",
 ];
 
-/// 工具派发 — `agb tool <name>` 的库面。`None` = 不是本 CLI 的工具。
+/// 工具派发 — `aginx-web tool <name>` 的库面。`None` = 不是本 CLI 的工具。
 pub async fn execute_tool(name: &str, input: &Value) -> Option<CarrierResult<String>> {
     match name {
         "browser_navigate" | "browser_read_page" => Some(browser::navigate(input).await),
@@ -114,7 +114,7 @@ pub fn check_taint_net_fetch(url: &str) -> Option<String> {
 
 /// 人读/机读两脸共用的错误出口：Err → stderr 一行 + rc 1。
 pub fn bail_human(e: &CarrierError) -> ! {
-    eprintln!("agb: {e}");
+    eprintln!("aginx-web: {e}");
     std::process::exit(1);
 }
 

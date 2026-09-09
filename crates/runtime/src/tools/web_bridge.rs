@@ -1,13 +1,14 @@
-//! agb 桥 — browser_* / web_search / web_fetch 工具的外置实现桥（M31 D3 批1）。
+//! web 桥 — browser_* / web_search / web_fetch 工具的外置实现桥（M31 D3 批1；
+//! 原 agb_bridge，D13 改姓 2026-09-09）。
 //!
-//! 实现已整体搬到 `agb` CLI（crates/agb，单真源）。本模块只留：
+//! 实现已整体搬到 `aginx-web` CLI（crates/web，单真源）。本模块只留：
 //! - definitions()：与原 tools/browser.rs / web_search.rs / web_fetch.rs
 //!   **逐字节相同**的 ToolDefinition（名字/schema/description 不动——
 //!   flow `tools:` 加载期冻结、金样本、教学文本全部依赖这批名字）。
-//! - execute()：spawn `agb tool <name>`，stdin 喂入参 JSON，stdout 收
+//! - execute()：spawn `aginx-web tool <name>`，stdin 喂入参 JSON，stdout 收
 //!   D1 信封（{"ok":true,"data":…} / {"ok":false,"error":…}）。
 //!
-//! 语义：定义恒广播；执行在 agb 未安装时干净报错（v1：包在场门执行，
+//! 语义：定义恒广播；执行在 aginx-web 未安装时干净报错（v1：包在场门执行，
 //! 不门广告——flow 冻结不因少包漂移）。
 //!
 //! tool_search 同批退役（宪法性替代：`ag commands`）。见 types CORE_TOOL_NAMES。
@@ -19,9 +20,9 @@ use carrier_types::error::{CarrierError, CarrierResult};
 use carrier_types::tool::{PermissionLevel, ToolDefinition};
 use serde_json::Value;
 
-pub struct AgbBridge;
+pub struct WebBridge;
 
-/// 桥承载的全部工具名（与 agb::TOOL_NAMES 一一对应）。
+/// 桥承载的全部工具名（与 crates/web 的 aginx_web::TOOL_NAMES 一一对应）。
 pub const BRIDGE_TOOL_NAMES: &[&str] = &[
     "browser_navigate",
     "browser_read_page",
@@ -38,7 +39,7 @@ pub const BRIDGE_TOOL_NAMES: &[&str] = &[
 ];
 
 #[async_trait]
-impl ToolModule for AgbBridge {
+impl ToolModule for WebBridge {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
@@ -274,7 +275,7 @@ Use browser_navigate to extract page content instead."
         if !BRIDGE_TOOL_NAMES.contains(&name) {
             return None;
         }
-        Some(run_agb_tool(name, input).await)
+        Some(run_web_tool(name, input).await)
     }
 
     fn permission_level(&self, tool_name: &str) -> PermissionLevel {
@@ -289,16 +290,16 @@ Use browser_navigate to extract page content instead."
     }
 }
 
-/// Spawn `agb tool <name>`（stdin=入参 JSON，stdout=D1 信封）并解信封。
+/// Spawn `aginx-web tool <name>`（stdin=入参 JSON，stdout=D1 信封）并解信封。
 ///
 /// sandbox 同 shell.rs 直接执行路径：env_clear 后只回 PATH/HOME 等
-/// SAFE_ENV_VARS —— agb 启动时自己 load_dotenv()，故 ~/.aginx/carrier/.env
+/// SAFE_ENV_VARS —— aginx-web 启动时自己 load_dotenv()，故 ~/.aginx/carrier/.env
 /// 的 AGINXBROWSER_URL 在子进程内仍生效。kill_on_drop：超时/取消不留孤儿。
-async fn run_agb_tool(name: &str, input: &Value) -> CarrierResult<String> {
+async fn run_web_tool(name: &str, input: &Value) -> CarrierResult<String> {
     use std::process::Stdio;
     use tokio::io::AsyncWriteExt;
 
-    let mut cmd = tokio::process::Command::new("agb");
+    let mut cmd = tokio::process::Command::new("aginx-web");
     cmd.arg("tool").arg(name);
     crate::subprocess_sandbox::sandbox_command(&mut cmd, &[]);
     cmd.stdin(Stdio::piped())
@@ -308,13 +309,13 @@ async fn run_agb_tool(name: &str, input: &Value) -> CarrierResult<String> {
 
     let mut child = cmd.spawn().map_err(|e| {
         CarrierError::Internal(format!(
-            "agb CLI not available ({e}) — browser/web tools live in the `agb` package. \
-             Install it (`ag pkg install agb`) or check PATH."
+            "aginx-web CLI not available ({e}) — browser/web tools live in the `aginx-web` \
+             package. Install it (`ag pkg install aginx-web`) or check PATH."
         ))
     })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        // Best-effort write; agb reads stdin to EOF before executing.
+        // Best-effort write; aginx-web reads stdin to EOF before executing.
         let payload = serde_json::to_vec(input).unwrap_or_default();
         let _ = stdin.write_all(&payload).await;
         let _ = stdin.shutdown().await;
@@ -323,7 +324,7 @@ async fn run_agb_tool(name: &str, input: &Value) -> CarrierResult<String> {
     let output = child
         .wait_with_output()
         .await
-        .map_err(|e| CarrierError::Internal(format!("agb tool {name} subprocess failed: {e}")))?;
+        .map_err(|e| CarrierError::Internal(format!("aginx-web tool {name} subprocess failed: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -332,7 +333,7 @@ async fn run_agb_tool(name: &str, input: &Value) -> CarrierResult<String> {
         let tail = if stdout.is_empty() { stderr } else { stdout };
         let preview = crate::str_utils::safe_truncate_str(&tail, 300);
         CarrierError::Internal(format!(
-            "agb tool {name} returned a non-JSON response (exit {:?}): {preview}",
+            "aginx-web tool {name} returned a non-JSON response (exit {:?}): {preview}",
             output.status.code()
         ))
     })?;
@@ -342,10 +343,10 @@ async fn run_agb_tool(name: &str, input: &Value) -> CarrierResult<String> {
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| {
-                CarrierError::Serialization("agb envelope missing string data field".to_string())
+                CarrierError::Serialization("aginx-web envelope missing string data field".to_string())
             })
     } else {
-        let msg = envelope["error"].as_str().unwrap_or("unknown agb error");
+        let msg = envelope["error"].as_str().unwrap_or("unknown aginx-web error");
         Err(CarrierError::Internal(msg.to_string()))
     }
 }
@@ -356,7 +357,7 @@ mod tests {
 
     #[test]
     fn definitions_match_bridge_names() {
-        let bridge = AgbBridge;
+        let bridge = WebBridge;
         let defs = bridge.definitions();
         let mut names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         names.sort_unstable();
@@ -367,7 +368,7 @@ mod tests {
 
     #[test]
     fn all_definitions_read_only() {
-        let bridge = AgbBridge;
+        let bridge = WebBridge;
         for name in BRIDGE_TOOL_NAMES {
             assert!(
                 matches!(bridge.permission_level(name), PermissionLevel::ReadOnly),
@@ -378,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_name_is_none() {
-        let bridge = AgbBridge;
+        let bridge = WebBridge;
         let ctx = crate::tool_context::ToolContext {
             kernel: None,
             memory: None,
@@ -418,16 +419,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_without_agb_reports_clean_error() {
-        // PATH scrubbed → spawn must fail with the "agb CLI not available" hint,
-        // never a panic and never a hang.
-        let r = run_agb_tool("browser_close", &serde_json::json!({})).await;
-        // On dev hosts agb may actually be on PATH (built earlier); then the
-        // call succeeds. Either way the contract is: Ok(string) or Err(hint).
+    async fn spawn_without_web_cli_reports_clean_error() {
+        // PATH scrubbed → spawn must fail with the "aginx-web CLI not
+        // available" hint, never a panic and never a hang.
+        let r = run_web_tool("browser_close", &serde_json::json!({})).await;
+        // On dev hosts aginx-web may actually be on PATH (built earlier); then
+        // the call succeeds. Either way the contract is: Ok(string) or Err(hint).
         match r {
             Ok(s) => assert!(s.contains("stateless")),
             Err(e) => assert!(
-                e.to_string().contains("agb CLI not available"),
+                e.to_string().contains("aginx-web CLI not available"),
                 "unexpected error: {e}"
             ),
         }

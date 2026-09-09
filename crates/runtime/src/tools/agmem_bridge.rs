@@ -21,7 +21,7 @@
 //! （吃轮次身份与守护内记忆句柄）。
 //!
 //! 语义：定义恒广播；执行在 agmem 未安装时干净报错（包在场门执行，不门
-//! 广告——flow 冻结不因少包漂移；与 M31 agb / M32 agf 桥同款）。
+//! 广告——flow 冻结不因少包漂移；与 M31 web / M32 agf 桥同款）。
 
 use super::ToolModule;
 use crate::tool_context::ToolContext;
@@ -358,7 +358,7 @@ impl ToolModule for AgmemBridge {
 }
 
 // ---------------------------------------------------------------------------
-// spawn + 信封解包（agb/agf 桥同款）
+// spawn + 信封解包（web/agf 桥同款）
 // ---------------------------------------------------------------------------
 
 /// 组装入参 + `_ctx`（身份三元组 + 库/workspace 定位）。抽出来单测：
@@ -398,7 +398,7 @@ fn build_payload(name: &str, input: &Value, ctx: &ToolContext<'_>) -> Value {
 
 /// Spawn `agmem tool <name>`（stdin=入参 JSON 含 `_ctx`，stdout=D1 信封）。
 ///
-/// sandbox 同 agb/agf 桥：env_clear 后只回 PATH/HOME 等 SAFE_ENV_VARS。
+/// sandbox 同 web/agf 桥：env_clear 后只回 PATH/HOME 等 SAFE_ENV_VARS。
 /// kill_on_drop：超时/取消不留孤儿。
 async fn run_agmem_tool(name: &str, input: &Value, ctx: &ToolContext<'_>) -> CarrierResult<String> {
     use std::process::Stdio;

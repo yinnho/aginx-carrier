@@ -65,7 +65,7 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     // CLI 人面常接 `| head`：Rust 默认忽略 SIGPIPE，写已关闭管道会以
     // "failed printing to stdout: Broken pipe" panic 收场。恢复默认处置
-    // = 安静地死于 SIGPIPE，与普通 CLI 一致（agb 同款，设备实测过）。
+    // = 安静地死于 SIGPIPE，与普通 CLI 一致（aginx-web 同款，设备实测过）。
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }

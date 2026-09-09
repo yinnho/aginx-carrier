@@ -29,24 +29,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agb"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "carrier-types",
- "clap",
- "dashmap",
- "hex",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "agf"
 version = "0.2.0"
 dependencies = [
@@ -60,6 +42,24 @@ dependencies = [
  "tokio",
  "tracing",
  "urlencoding",
+]
+
+[[package]]
+name = "aginx-web"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "carrier-types",
+ "clap",
+ "dashmap",
+ "hex",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -652,7 +652,6 @@ dependencies = [
 name = "carrier-runtime"
 version = "0.2.0"
 dependencies = [
- "agb",
  "async-trait",
  "base64",
  "bytes",

@@ -4,7 +4,6 @@
 //! (for LLM tool schemas) and execution (the actual logic).
 
 pub mod a2a;
-pub mod agb_bridge;
 pub mod agf_bridge;
 pub mod agmem_bridge;
 pub mod carrier_bridge;
@@ -19,6 +18,7 @@ pub mod media;
 pub mod shell;
 pub mod sqlite;
 pub mod training;
+pub mod web_bridge;
 
 use crate::kernel_handle::KernelHandle;
 use crate::tool_context::ToolContext;
@@ -30,8 +30,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
-// AginBrowser 客户端 helpers 已随实现整体搬进 `agb` CLI（M31 D3 批1）。
-// 工具面见 agb_bridge.rs；配置键仍是 AGINXBROWSER_URL（~/.aginx/carrier/.env）。
+// AginBrowser 客户端 helpers 已随实现整体搬进 `aginx-web` CLI（M31 D3 批1；
+// 原 agb，D13 改姓 2026-09-09）。工具面见 web_bridge.rs；配置键仍是
+// AGINXBROWSER_URL（~/.aginx/carrier/.env）。
 //
 // 文件面工具（file_* + image_analyze）已随实现整体搬进 `agf` CLI
 // （M32 D3 批2）。工具面见 agf_bridge.rs；路径解析/沙箱留在桥内。
@@ -88,7 +89,7 @@ pub fn builtin_modules(
         Box::new(document::DocumentTools),
         Box::new(sqlite::SqliteTools),
         Box::new(shell::ShellTools),
-        Box::new(agb_bridge::AgbBridge),
+        Box::new(web_bridge::WebBridge),
         Box::new(knowledge::KnowledgeTools),
         Box::new(media::MediaTools),
         Box::new(agent::DelegationTools),

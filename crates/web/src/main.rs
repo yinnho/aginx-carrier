@@ -1,8 +1,8 @@
-//! agb — AginxBrowser 客户端 CLI（M31 D3 批1）。
+//! aginx-web — AginxBrowser 客户端 CLI（原 agb，M31 D3 批1；D13 改姓 2026-09-09）。
 //!
 //! 两张脸：人/流程脚本面子命令（navigate/click/eval/type/scroll/wait/
-//! back/close/screenshot/search/fetch），机读面 `agb tool <name>`（stdin
-//! 收工具入参 JSON，stdout 出 D1 信封；runtime 的 agb_bridge 消费）。
+//! back/close/screenshot/search/fetch），机读面 `aginx-web tool <name>`
+//! （stdin 收工具入参 JSON，stdout 出 D1 信封；runtime 的 web_bridge 消费）。
 //! 配置：AGINXBROWSER_URL（env 或 ~/.aginx/carrier/.env，启动时加载）。
 
 use clap::{Parser, Subcommand};
@@ -10,10 +10,10 @@ use serde_json::Value;
 
 #[derive(Parser)]
 #[command(
-    name = "agb",
+    name = "aginx-web",
     version,
     about = "AginxBrowser 客户端 — browser/search/fetch 工具 CLI",
-    long_about = "agb 是浏览器/搜索/抓取工具的 CLI 形态（D3 批1 外置成包）。\n人面子命令直接给参数；机读面 `agb tool <name>` 从 stdin 读 JSON，\nstdout 出 D1 信封（{\"ok\":true,\"data\":…}）。"
+    long_about = "aginx-web 是浏览器/搜索/抓取工具的 CLI 形态（D3 批1 外置成包）。\n人面子命令直接给参数；机读面 `aginx-web tool <name>` 从 stdin 读 JSON，\nstdout 出 D1 信封（{\"ok\":true,\"data\":…}）。"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -157,7 +157,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)?;
             let input: Value = serde_json::from_str(&raw)
                 .map_err(|e| anyhow::anyhow!("stdin 不是合法 JSON 入参: {e}"))?;
-            match agb::execute_tool(&name, &input).await {
+            match aginx_web::execute_tool(&name, &input).await {
                 None => {
                     print_envelope_error(&format!("unknown tool: {name}"));
                     std::process::exit(1);
@@ -178,10 +178,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             // 人面：参数拼回工具 JSON 入参，走同一条 execute_tool 单真源。
             let (name, input) = args_to_input(human);
             let input_val = serde_json::Value::Object(input);
-            match agb::execute_tool(name, &input_val).await {
+            match aginx_web::execute_tool(name, &input_val).await {
                 None => anyhow::bail!("unknown tool: {name}"),
                 Some(Ok(data)) => println!("{data}"),
-                Some(Err(e)) => agb::bail_human(&e),
+                Some(Err(e)) => aginx_web::bail_human(&e),
             }
         }
     }
@@ -343,5 +343,5 @@ fn args_to_input(cmd: Command) -> (&'static str, serde_json::Map<String, Value>)
 
 fn print_envelope_error(msg: &str) {
     println!("{}", serde_json::json!({"ok": false, "error": msg}));
-    eprintln!("agb: {msg}");
+    eprintln!("aginx-web: {msg}");
 }

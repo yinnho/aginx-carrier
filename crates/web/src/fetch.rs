@@ -41,7 +41,7 @@ fn should_use_aginxbrowser(url: &str) -> bool {
 
 /// 引擎默认配置（types WebFetchConfig::default：50k chars / 10MB / 30s /
 /// readability 开）。kernel 的 config.web.fetch 覆盖在进程内丢失——CLI 面
-/// v1 用默认值（`agb fetch --max-chars` 可单调用覆盖）。
+/// v1 用默认值（`aginx-web fetch --max-chars` 可单调用覆盖）。
 pub fn default_engine_config() -> WebFetchConfig {
     WebFetchConfig::default()
 }
