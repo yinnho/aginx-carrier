@@ -45,20 +45,30 @@ pub async fn run() -> Result<()> {
 
     let ours = build_manifest(&ws).context("构建本地 manifest 失败")?;
 
-    // Changes relative to base: files whose hash differs (or new) -> send;
-    // files in base but missing locally -> delete.
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut deletes: Vec<String> = Vec::new();
-    for (path, sha) in &ours.files {
-        if base.files.get(path) != Some(sha) {
+    if api == "clones" {
+        // Runtime shape: send only the delta relative to base (files whose
+        // hash differs or are new; files in base but missing locally -> delete).
+        for (path, sha) in &ours.files {
+            if base.files.get(path) != Some(sha) {
+                let data = std::fs::read(ws.join(path))
+                    .with_context(|| format!("读取 {} 失败", path))?;
+                files.insert(path.clone(), data);
+            }
+        }
+        for path in base.files.keys() {
+            if !ours.files.contains_key(path) {
+                deletes.push(path.clone());
+            }
+        }
+    } else {
+        // Duphub shape: every push is a full version snapshot — send the
+        // complete definition file set; deletes are implicit (absent files).
+        for path in ours.files.keys() {
             let data = std::fs::read(ws.join(path))
                 .with_context(|| format!("读取 {} 失败", path))?;
             files.insert(path.clone(), data);
-        }
-    }
-    for path in base.files.keys() {
-        if !ours.files.contains_key(path) {
-            deletes.push(path.clone());
         }
     }
 
@@ -74,8 +84,15 @@ pub async fn run() -> Result<()> {
         url,
     );
 
+    // For duphub the `hash` field is our new manifest hash (logged, not
+    // enforced); for the runtime it is the fast-forward base.
+    let push_hash = if api == "clones" {
+        base.hash.clone()
+    } else {
+        ours.hash.clone()
+    };
     let new_manifest =
-        remote::post_push(&url, &api_key, &api, &name, &base.hash, &files, &deletes).await?;
+        remote::post_push(&url, &api_key, &api, &name, &push_hash, &files, &deletes).await?;
 
     state.remote_base = Some(new_manifest.clone());
     state.save(&ws)?;

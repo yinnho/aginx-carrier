@@ -49,10 +49,16 @@ pub async fn get_file(url: &str, api_key: &str, api: &str, name: &str, path: &st
     Ok(bytes.to_vec())
 }
 
-/// Post a fast-forward push: base_hash + changed files + deletes.
+/// Post a push. Two payload shapes by `remote.api`:
 ///
-/// Returns the remote's new manifest after apply. Errors (e.g. 409 remote
-/// evolved) bubble up as a bail with the server message.
+/// - "clones" (runtime): fast-forward VCS — `base_hash` + changed files +
+///   deletes; response carries the new `manifest`.
+/// - "templates" (duphub): snapshot versioning — the FULL definition file
+///   set + the client manifest `hash` (logged server-side, not enforced);
+///   deletes are implicit (absent files); response is `{name,version,status}`,
+///   so the new manifest is fetched back afterwards.
+///
+/// Errors (e.g. 409 remote evolved) bubble up as a bail with the server message.
 pub async fn post_push(
     url: &str,
     api_key: &str,
@@ -73,11 +79,18 @@ pub async fn post_push(
             )
         })
         .collect();
-    let payload = serde_json::json!({
-        "base_hash": base_hash,
-        "files": files_b64,
-        "deletes": deletes,
-    });
+    let payload = if api == "clones" {
+        serde_json::json!({
+            "base_hash": base_hash,
+            "files": files_b64,
+            "deletes": deletes,
+        })
+    } else {
+        serde_json::json!({
+            "hash": base_hash,
+            "files": files_b64,
+        })
+    };
 
     let resp = reqwest::Client::new()
         .post(&endpoint)
@@ -91,7 +104,12 @@ pub async fn post_push(
     if !status.is_success() {
         anyhow::bail!("推送失败 ({status}): {body}");
     }
-    let v: serde_json::Value = serde_json::from_str(&body).context("解析推送响应失败")?;
-    let manifest = v.get("manifest").context("推送响应缺 manifest")?;
-    serde_json::from_value(manifest.clone()).context("解析 manifest 失败")
+    if api == "clones" {
+        let v: serde_json::Value = serde_json::from_str(&body).context("解析推送响应失败")?;
+        let manifest = v.get("manifest").context("推送响应缺 manifest")?;
+        serde_json::from_value(manifest.clone()).context("解析 manifest 失败")
+    } else {
+        // duphub answers {name, version, status}; pull the resulting manifest.
+        get_manifest(url, api_key, api, name).await
+    }
 }
