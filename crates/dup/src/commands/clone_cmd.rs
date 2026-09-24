@@ -16,7 +16,7 @@ pub async fn run(name: &str) -> Result<()> {
     let config = DupConfig::load_global()?;
     let url = config.resolve_url();
     let api = config.resolve_api();
-    let api_key = config.resolve_api_key()?;
+    let api_key = config.resolve_api_key_opt(); // 读操作免钥：hub public+免费匿名可下
 
     let cwd = std::env::current_dir()?;
     let target_dir = cwd.join(name);

@@ -16,7 +16,7 @@ pub fn run(name: Option<String>) -> Result<()> {
     let ws = workspace::require_workspace()?;
     let config = DupConfig::load_global()?;
     let url = config.resolve_url();
-    let api_key = config.resolve_api_key()?;
+    let api_key = config.resolve_api_key_opt(); // 读操作免钥：hub public+免费匿名可下
     let remote_name = name.unwrap_or_else(|| {
         ws.file_name()
             .map(|n| n.to_string_lossy().into_owned())

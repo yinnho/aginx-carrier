@@ -26,7 +26,7 @@ pub async fn run() -> Result<()> {
     let config = DupConfig::load_global()?;
     let url = config.resolve_url();
     let api = config.resolve_api();
-    let api_key = config.resolve_api_key()?;
+    let api_key = config.resolve_api_key_opt(); // 读操作免钥：hub public+免费匿名可下
     let name = state.remote_name.clone();
 
     let base = state.remote_base.clone().unwrap_or_else(Manifest::empty);

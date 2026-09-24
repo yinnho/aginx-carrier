@@ -23,12 +23,9 @@ fn endpoint(url: &str, api: &str, name: &str, tail: &str) -> String {
 /// Fetch the remote's current definition-layer manifest.
 pub async fn get_manifest(url: &str, api_key: &str, api: &str, name: &str) -> Result<Manifest> {
     let endpoint = endpoint(url, api, name, "manifest");
-    let resp = reqwest::Client::new()
-        .get(&endpoint)
-        .bearer_auth(api_key)
-        .send()
-        .await
-        .context("无法连接 remote")?;
+    let req = reqwest::Client::new().get(&endpoint);
+    let req = if api_key.is_empty() { req } else { req.bearer_auth(api_key) };
+    let resp = req.send().await.context("无法连接 remote")?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -40,12 +37,9 @@ pub async fn get_manifest(url: &str, api_key: &str, api: &str, name: &str) -> Re
 /// Fetch a single file's raw bytes from the remote.
 pub async fn get_file(url: &str, api_key: &str, api: &str, name: &str, path: &str) -> Result<Vec<u8>> {
     let endpoint = endpoint(url, api, name, &format!("file/{path}"));
-    let resp = reqwest::Client::new()
-        .get(&endpoint)
-        .bearer_auth(api_key)
-        .send()
-        .await
-        .context("无法连接 remote")?;
+    let req = reqwest::Client::new().get(&endpoint);
+    let req = if api_key.is_empty() { req } else { req.bearer_auth(api_key) };
+    let resp = req.send().await.context("无法连接 remote")?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();

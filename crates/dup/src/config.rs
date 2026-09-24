@@ -93,19 +93,23 @@ impl DupConfig {
 
     /// Resolve the effective API key (env var first, then config).
     pub fn resolve_api_key(&self) -> Result<String> {
+        let key = self.resolve_api_key_opt();
+        if key.is_empty() {
+            anyhow::bail!("API Key 未设置。请运行 'dup config remote.api_key <key>' 设置。");
+        }
+        Ok(key)
+    }
+
+    /// Read-only commands (clone/pull) resolve the key optionally: the hub
+    /// serves public+free templates anonymously (GitHub-style), so an empty
+    /// key just means "no Authorization header".
+    pub fn resolve_api_key_opt(&self) -> String {
         if let Ok(v) = std::env::var("OPENCARRIER_API_KEY") {
             if !v.trim().is_empty() {
-                return Ok(v);
+                return v.trim().to_string();
             }
         }
-        let key = self.remote().api_key.trim();
-        if !key.is_empty() {
-            Ok(key.to_string())
-        } else {
-            Err(anyhow::anyhow!(
-                "API Key 未设置。请运行 'dup config remote.api_key <key>' 设置。"
-            ))
-        }
+        self.remote().api_key.trim().to_string()
     }
 
     /// Set a config key (e.g. `remote.url`, `remote.api_key`, `remote.api`).
